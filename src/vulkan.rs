@@ -129,7 +129,7 @@ fn select_physical_device_and_graphics_queue(
 
             let props = unsafe { instance.get_physical_device_properties(*pd) };
             let api_supported = props.api_version >= minimum_api_version;
-
+            let is_discrete = props.device_type == vk::PhysicalDeviceType::DISCRETE_GPU;
             let mut features_13 = vk::PhysicalDeviceVulkan13Features::default();
             let mut features_12 = vk::PhysicalDeviceVulkan12Features {
                 p_next: (&raw mut features_13).cast(),
@@ -146,7 +146,7 @@ fn select_physical_device_and_graphics_queue(
                 && features_12.buffer_device_address == b_true
                 && features_12.descriptor_indexing == b_true;
 
-            (api_supported && has_features).then_some((pd, index))
+            (api_supported && has_features && is_discrete).then_some((pd, index))
         })
         .wrap_err("could not find suitable devices")?;
     Ok((*physical_device, graphics_queue_index as u32))
@@ -252,6 +252,14 @@ impl Vulkan {
 
     pub const fn entry(&self) -> &ash::Entry {
         &self.entry
+    }
+
+    pub fn graphics_queue_index(&self) -> u32 {
+        self.graphics_queue_index
+    }
+
+    pub fn graphics_queue(&self) -> vk::Queue {
+        self.graphics_queue
     }
 }
 extern "system" fn debug_callback(

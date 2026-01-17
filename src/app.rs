@@ -62,7 +62,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let Some(engine) = &mut self.engine {
                     if engine.render {
-                        engine.render();
+                        engine.render().expect("could not render");
                         engine.window.request_redraw();
                     } else {
                         std::thread::sleep(Duration::from_millis(100));
