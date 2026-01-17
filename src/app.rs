@@ -37,7 +37,8 @@ impl ApplicationHandler for App {
             )
             .expect("could not create window");
         window.request_redraw();
-        self.engine = Some(Engine::new(window));
+
+        self.engine = Some(Engine::new(window).expect("could not create engine"));
     }
 
     fn window_event(
@@ -55,6 +56,7 @@ impl ApplicationHandler for App {
 
             WindowEvent::CloseRequested => {
                 event_loop.exit();
+                self.engine.take();
             }
 
             WindowEvent::RedrawRequested => {
@@ -70,7 +72,7 @@ impl ApplicationHandler for App {
 
             event => {
                 if let Some(engine) = &mut self.engine {
-                    engine.window_event(event);
+                    engine.window_event(&event);
                 }
             }
         }

@@ -1,9 +1,9 @@
-use std::ffi::CStr;
-
-use ash::{
-    khr::surface,
-    vk::{self, Bool32},
+use std::{
+    borrow::Cow,
+    ffi::{self, CStr},
 };
+
+use ash::vk::{self};
 use eyre::{Context, ContextCompat};
 use winit::{
     raw_window_handle::{DisplayHandle, HasDisplayHandle, HasWindowHandle},
@@ -11,6 +11,7 @@ use winit::{
 };
 
 pub struct Vulkan {
+    entry: ash::Entry,
     instance: ash::Instance,
     debug_messenger: vk::DebugUtilsMessengerEXT,
     physical_device: vk::PhysicalDevice,
@@ -24,8 +25,6 @@ const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 
 /// The Vulkan SDK version that started requiring the portability subset extension for macOS.
 pub const PORTABILITY_MACOS_VERSION: u32 = vk::make_api_version(0, 1, 3, 216);
-
-// pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION];
 
 fn build_instance(
     entry: &ash::Entry,
@@ -47,6 +46,7 @@ fn build_instance(
     let mut extension_names =
         ash_window::enumerate_required_extensions(display_handle.as_raw())?.to_vec();
     extension_names.push(vk::EXT_DEBUG_UTILS_NAME.as_ptr());
+    extension_names.push(ash::khr::surface::NAME.as_ptr());
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
@@ -91,7 +91,7 @@ fn build_messenger(
     }
 }
 
-fn get_api(api: u32) -> (u32, u32, u32, u32) {
+const fn get_api(api: u32) -> (u32, u32, u32, u32) {
     let variant = vk::api_version_variant(api);
     let major = vk::api_version_major(api);
     let minor = vk::api_version_minor(api);
@@ -99,6 +99,11 @@ fn get_api(api: u32) -> (u32, u32, u32, u32) {
     (variant, major, minor, patch)
 }
 
+const DEVICE_EXTENSION_NAMES: &[*const i8] = &[
+    ash::khr::swapchain::NAME.as_ptr(),
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    ash::khr::portability_subset::NAME.as_ptr(),
+];
 fn select_physical_device_and_graphics_queue(
     entry: &ash::Entry,
     instance: &ash::Instance,
@@ -108,7 +113,7 @@ fn select_physical_device_and_graphics_queue(
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
         .wrap_err("could not enumerate physical devices")?;
 
-    let surface_loader = surface::Instance::new(entry, instance);
+    let surface_loader = ash::khr::surface::Instance::new(entry, instance);
     let (physical_device, graphics_queue_index) = physical_devices
         .iter()
         .find_map(|pd| {
@@ -159,10 +164,7 @@ fn build_device(
         .buffer_device_address(true)
         .descriptor_indexing(true);
     features_12.p_next = (&raw mut features_13).cast();
-    let device_extension_names = [
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        ash::khr::portability_subset::NAME.as_ptr(),
-    ];
+
     let queue_info = vk::DeviceQueueCreateInfo::default()
         .queue_family_index(queue)
         .queue_priorities(&[1.0]);
@@ -170,7 +172,7 @@ fn build_device(
     let features = vk::PhysicalDeviceFeatures::default();
     let device_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_infos)
-        .enabled_extension_names(&device_extension_names)
+        .enabled_extension_names(DEVICE_EXTENSION_NAMES)
         .enabled_features(&features)
         .push_next(&mut features_12);
     unsafe { instance.create_device(physical_device, &device_info, None) }
@@ -178,7 +180,7 @@ fn build_device(
 }
 impl Vulkan {
     pub fn new(window: &Window) -> eyre::Result<Self> {
-        let entry = ash::Entry::linked();
+        let entry = unsafe { ash::Entry::load() }?;
         let display_handle = window.display_handle().wrap_err("window handle error")?;
         let window_handle = window.window_handle().wrap_err("window handle error")?;
         let api_version = vk::make_api_version(0, 1, 3, 0);
@@ -198,7 +200,8 @@ impl Vulkan {
                 display_handle.as_raw(),
                 window_handle.as_raw(),
                 None,
-            )?
+            )
+            .wrap_err("could not create surface")?
         };
 
         let (physical_device, graphics_queue_index) =
@@ -207,6 +210,7 @@ impl Vulkan {
         let graphics_queue = unsafe { device.get_device_queue(graphics_queue_index, 0) };
 
         Ok(Self {
+            entry,
             instance,
             debug_messenger,
             physical_device,
@@ -220,12 +224,21 @@ impl Vulkan {
     pub const fn instance(&self) -> &ash::Instance {
         &self.instance
     }
+    pub fn surface_instance(&self) -> ash::khr::surface::Instance {
+        ash::khr::surface::Instance::new(&self.entry, &self.instance)
+    }
+    pub fn debug_instance(&self) -> ash::ext::debug_utils::Instance {
+        ash::ext::debug_utils::Instance::new(&self.entry, &self.instance)
+    }
 
     pub const fn device(&self) -> &ash::Device {
         &self.device
     }
+    pub fn swapchain_device(&self) -> ash::khr::swapchain::Device {
+        ash::khr::swapchain::Device::new(&self.instance, &self.device)
+    }
 
-    pub const fn chosen_gpu(&self) -> vk::PhysicalDevice {
+    pub const fn physical_device(&self) -> vk::PhysicalDevice {
         self.physical_device
     }
 
@@ -236,27 +249,39 @@ impl Vulkan {
     pub const fn debug_messenger(&self) -> vk::DebugUtilsMessengerEXT {
         self.debug_messenger
     }
+
+    pub const fn entry(&self) -> &ash::Entry {
+        &self.entry
+    }
 }
 extern "system" fn debug_callback(
     severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    type_: vk::DebugUtilsMessageTypeFlagsEXT,
-    data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-    _: *mut std::ffi::c_void,
+    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
+    _user_data: *mut std::os::raw::c_void,
 ) -> vk::Bool32 {
-    // SAFETY: assume data passed is non null
-    let data = unsafe { *data };
-    // SAFETY: data.message is c-string since message_types is not
-    // DEVICE_ADDRESS_BINDING
-    let message = unsafe { CStr::from_ptr(data.p_message) }.to_string_lossy();
+    let callback_data = unsafe { *p_callback_data };
+    let id_number = callback_data.message_id_number;
 
-    if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
-        tracing::error!("({type_:?}) {message}");
-    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
-        tracing::warn!("({type_:?}) {message}");
-    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
-        tracing::debug!("({type_:?}) {message}");
+    let id_name = if callback_data.p_message_id_name.is_null() {
+        Cow::from("")
     } else {
-        tracing::trace!("({type_:?}) {message}");
+        unsafe { ffi::CStr::from_ptr(callback_data.p_message_id_name).to_string_lossy() }
+    };
+    let message = if callback_data.p_message.is_null() {
+        Cow::from("")
+    } else {
+        unsafe { ffi::CStr::from_ptr(callback_data.p_message).to_string_lossy() }
+    };
+    let format = format!("{severity:?}:\n{message_type:?} [{id_name} ({id_number})] : {message}");
+    if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
+        tracing::error!("{format}");
+    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
+        tracing::warn!("{format}");
+    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
+        tracing::debug!("{format}");
+    } else {
+        tracing::trace!("{format}");
     }
 
     vk::FALSE
