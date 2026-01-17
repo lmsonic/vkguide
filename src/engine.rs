@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
+use crate::vulkan::Vulkan;
+
 pub struct Engine {
     pub window: Arc<Window>,
     pub render: bool,
@@ -13,6 +15,7 @@ impl Drop for Engine {
 
 impl Engine {
     pub fn new(window: Window) -> Self {
+        let vulkan = Vulkan::new(&window);
         Self {
             window: Arc::new(window),
             render: true,

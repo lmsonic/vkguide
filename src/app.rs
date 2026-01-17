@@ -12,7 +12,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { engine: None }
     }
 }

@@ -17,7 +17,7 @@ fn main() {
         .with(fmt::layer().compact().with_timer(timer))
         .with(EnvFilter::from_default_env())
         .init();
-    // color_eyre::install().unwrap();
+    color_eyre::install().unwrap();
     let event_loop = EventLoop::new().unwrap();
 
     event_loop.set_control_flow(ControlFlow::Poll);
