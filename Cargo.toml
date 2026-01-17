@@ -1,0 +1,31 @@
+[package]
+name = "vkguide"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+time = { version = "0.3.44", features = [
+    "macros",
+    "alloc",
+], default-features = false }
+tracing-subscriber = { version = "0.3.22", features = [
+    "ansi",
+    "env-filter",
+    "local-time",
+    "smallvec",
+], default-features = false }
+tracing = { version = "0.1.44", features = ["std"], default-features = false }
+ash = "0.38.0"
+egui-ash-renderer = { version = "0.11.0", features = [
+    "dynamic-rendering",
+    "vk-mem",
+] }
+features = { version = "0.10.0", default-features = false }
+glam = "0.30.10"
+image = { version = "0.25.9", default-features = false }
+tobj = "4.0.3"
+vk-mem = "0.5.0"
+
+x11 = { version = "2.21.0", default-features = false }
+winit = "0.30.12"
