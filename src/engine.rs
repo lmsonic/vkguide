@@ -26,7 +26,7 @@ impl Drop for Engine {
         unsafe { device.device_wait_idle() }.unwrap();
         for f in self.frames {
             unsafe { device.destroy_command_pool(f.cmd_pool(), None) };
-            unsafe { device.destroy_fence(f.fence(), None) };
+            unsafe { device.destroy_fence(f.render_fence(), None) };
             unsafe { device.destroy_semaphore(f.swapchain_semaphore(), None) };
             unsafe { device.destroy_semaphore(f.render_semaphore(), None) };
         }
@@ -71,17 +71,17 @@ impl Engine {
     }
 
     const fn get_current_frame(&self) -> &FrameData {
-        &self.frames[self.frame_index % self.frames.len()]
+        &self.frames[self.frame_index % FRAMES_IN_FLIGHT]
     }
 
     pub fn render(&mut self) -> eyre::Result<()> {
         let current_frame = self.get_current_frame();
         let device = self.vulkan.device();
-        unsafe { device.wait_for_fences(&[current_frame.fence()], true, u64::MAX) }?;
-        unsafe { device.reset_fences(&[current_frame.fence()]) }?;
+        unsafe { device.wait_for_fences(&[current_frame.render_fence()], true, u64::MAX) }?;
+        unsafe { device.reset_fences(&[current_frame.render_fence()]) }?;
 
         let swapchain_device = self.vulkan.swapchain_device();
-        let (image_index, code) = unsafe {
+        let (image_index, _) = unsafe {
             swapchain_device.acquire_next_image(
                 self.swapchain.swapchain(),
                 u64::MAX,
@@ -118,7 +118,19 @@ impl Engine {
                 &[subresource_range],
             );
         };
+        transition_image(
+            device,
+            cmd,
+            image,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+        );
         unsafe { device.end_command_buffer(cmd) }?;
+
+        let cmd_info = vk::CommandBufferSubmitInfo::default()
+            .command_buffer(cmd)
+            .device_mask(0);
+
         let wait_info = semaphore_submit_info(
             vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             current_frame.swapchain_semaphore(),
@@ -127,7 +139,32 @@ impl Engine {
             vk::PipelineStageFlags2::ALL_GRAPHICS,
             current_frame.render_semaphore(),
         );
+
+        let wait_infos = [wait_info];
+        let signal_infos = [signal_info];
+        let cmd_infos = [cmd_info];
+        let submit_info = vk::SubmitInfo2::default()
+            .wait_semaphore_infos(&wait_infos)
+            .signal_semaphore_infos(&signal_infos)
+            .command_buffer_infos(&cmd_infos);
+
+        let graphics_queue = self.vulkan.graphics_queue();
+        unsafe {
+            device.queue_submit2(graphics_queue, &[submit_info], current_frame.render_fence())
+        }?;
+
+        let swapchains = [self.swapchain.swapchain()];
+        let wait_semaphores = [current_frame.render_semaphore()];
+        let image_indices = [image_index];
+        let present_info = vk::PresentInfoKHR::default()
+            .swapchains(&swapchains)
+            .wait_semaphores(&wait_semaphores)
+            .image_indices(&image_indices);
+
+        unsafe { swapchain_device.queue_present(self.vulkan.present_queue(), &present_info) }?;
+
         self.frame_index += 1;
+
         Ok(())
     }
 

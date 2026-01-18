@@ -1,10 +1,11 @@
 use std::{
     borrow::Cow,
+    collections::{HashMap, HashSet},
     ffi::{self, CStr},
 };
 
 use ash::vk::{self};
-use eyre::{Context, ContextCompat};
+use eyre::{Context, ContextCompat, OptionExt};
 use winit::{
     raw_window_handle::{DisplayHandle, HasDisplayHandle, HasWindowHandle},
     window::Window,
@@ -17,8 +18,10 @@ pub struct Vulkan {
     physical_device: vk::PhysicalDevice,
     device: ash::Device,
     surface: vk::SurfaceKHR,
-    graphics_queue_index: u32,
+    queue_family_indices: QueueFamilyIndices,
     graphics_queue: vk::Queue,
+    present_queue: vk::Queue,
+    transfer_queue: vk::Queue,
 }
 
 const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
@@ -104,28 +107,78 @@ const DEVICE_EXTENSION_NAMES: &[*const i8] = &[
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     ash::khr::portability_subset::NAME.as_ptr(),
 ];
+
+pub struct QueueFamilyIndices {
+    pub graphics: u32,
+    pub present: u32,
+    pub transfer: u32,
+}
+
+impl QueueFamilyIndices {
+    fn new(
+        entry: &ash::Entry,
+        instance: &ash::Instance,
+        surface: vk::SurfaceKHR,
+        physical_device: vk::PhysicalDevice,
+    ) -> eyre::Result<Self> {
+        let surface_loader = ash::khr::surface::Instance::new(entry, instance);
+
+        let props =
+            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+
+        let graphics = props
+            .iter()
+            .enumerate()
+            .find_map(|(index, prop)| {
+                (prop.queue_flags.contains(vk::QueueFlags::GRAPHICS)).then_some(index)
+            })
+            .ok_or_eyre("could not find graphics")? as u32;
+        let present = props
+            .iter()
+            .enumerate()
+            .find_map(|(index, _)| {
+                let support_surface = unsafe {
+                    surface_loader.get_physical_device_surface_support(
+                        physical_device,
+                        index as u32,
+                        surface,
+                    )
+                }
+                .ok()?;
+                (support_surface).then_some(index)
+            })
+            .ok_or_eyre("could not find present")? as u32;
+        let transfer = props
+            .iter()
+            .enumerate()
+            .find_map(|(index, prop)| {
+                (prop.queue_flags.contains(vk::QueueFlags::TRANSFER)
+                    && !prop.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+                .then_some(index)
+            })
+            .ok_or_eyre("could not find transfer")? as u32;
+        Ok(Self {
+            graphics,
+            present,
+            transfer,
+        })
+    }
+}
+
 fn select_physical_device_and_graphics_queue(
     entry: &ash::Entry,
     instance: &ash::Instance,
     surface: vk::SurfaceKHR,
     minimum_api_version: u32,
-) -> eyre::Result<(vk::PhysicalDevice, u32)> {
+) -> eyre::Result<(vk::PhysicalDevice, QueueFamilyIndices)> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
         .wrap_err("could not enumerate physical devices")?;
 
-    let surface_loader = ash::khr::surface::Instance::new(entry, instance);
-    let (physical_device, graphics_queue_index) = physical_devices
+    let (physical_device, queue_family_indices) = physical_devices
         .iter()
         .find_map(|pd| {
-            let props = unsafe { instance.get_physical_device_queue_family_properties(*pd) };
-            let index = props.iter().enumerate().find_map(|(index, prop)| {
-                let support_graphics = prop.queue_flags.contains(vk::QueueFlags::GRAPHICS);
-                let support_surface = unsafe {
-                    surface_loader.get_physical_device_surface_support(*pd, index as u32, surface)
-                }
-                .ok()?;
-                (support_graphics && support_surface).then_some(index)
-            })?;
+            let queue_family_indices =
+                QueueFamilyIndices::new(entry, instance, surface, *pd).ok()?;
 
             let props = unsafe { instance.get_physical_device_properties(*pd) };
             let api_supported = props.api_version >= minimum_api_version;
@@ -146,16 +199,16 @@ fn select_physical_device_and_graphics_queue(
                 && features_12.buffer_device_address == b_true
                 && features_12.descriptor_indexing == b_true;
 
-            (api_supported && has_features && is_discrete).then_some((pd, index))
+            (api_supported && has_features && is_discrete).then_some((pd, queue_family_indices))
         })
         .wrap_err("could not find suitable devices")?;
-    Ok((*physical_device, graphics_queue_index as u32))
+    Ok((*physical_device, queue_family_indices))
 }
 
 fn build_device(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
-    queue: u32,
+    queue_family_indices: &QueueFamilyIndices,
 ) -> eyre::Result<ash::Device> {
     let mut features_13 = vk::PhysicalDeviceVulkan13Features::default()
         .dynamic_rendering(true)
@@ -165,10 +218,20 @@ fn build_device(
         .descriptor_indexing(true);
     features_12.p_next = (&raw mut features_13).cast();
 
-    let queue_info = vk::DeviceQueueCreateInfo::default()
-        .queue_family_index(queue)
-        .queue_priorities(&[1.0]);
-    let queue_infos = [queue_info];
+    let mut map = HashSet::new();
+    map.insert(queue_family_indices.graphics);
+    map.insert(queue_family_indices.transfer);
+    map.insert(queue_family_indices.present);
+
+    let queue_infos = map
+        .iter()
+        .map(|queue| {
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(*queue)
+                .queue_priorities(&[1.0])
+        })
+        .collect::<Vec<_>>();
+
     let features = vk::PhysicalDeviceFeatures::default();
     let device_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_infos)
@@ -204,10 +267,12 @@ impl Vulkan {
             .wrap_err("could not create surface")?
         };
 
-        let (physical_device, graphics_queue_index) =
+        let (physical_device, queue_family_indices) =
             select_physical_device_and_graphics_queue(&entry, &instance, surface, api_version)?;
-        let device = build_device(&instance, physical_device, graphics_queue_index)?;
-        let graphics_queue = unsafe { device.get_device_queue(graphics_queue_index, 0) };
+        let device = build_device(&instance, physical_device, &queue_family_indices)?;
+        let graphics_queue = unsafe { device.get_device_queue(queue_family_indices.graphics, 0) };
+        let present_queue = unsafe { device.get_device_queue(queue_family_indices.present, 0) };
+        let transfer_queue = unsafe { device.get_device_queue(queue_family_indices.transfer, 0) };
 
         Ok(Self {
             entry,
@@ -216,8 +281,11 @@ impl Vulkan {
             physical_device,
             device,
             surface,
-            graphics_queue_index,
+
             graphics_queue,
+            queue_family_indices,
+            present_queue,
+            transfer_queue,
         })
     }
 
@@ -254,12 +322,18 @@ impl Vulkan {
         &self.entry
     }
 
-    pub fn graphics_queue_index(&self) -> u32 {
-        self.graphics_queue_index
+    pub const fn queue_family_indices(&self) -> &QueueFamilyIndices {
+        &self.queue_family_indices
     }
 
-    pub fn graphics_queue(&self) -> vk::Queue {
+    pub const fn graphics_queue(&self) -> vk::Queue {
         self.graphics_queue
+    }
+    pub const fn present_queue(&self) -> vk::Queue {
+        self.present_queue
+    }
+    pub const fn transfer_queue(&self) -> vk::Queue {
+        self.transfer_queue
     }
 }
 extern "system" fn debug_callback(
