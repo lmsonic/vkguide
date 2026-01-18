@@ -5,9 +5,12 @@ use eyre::Ok;
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 use crate::{
+    descriptors::{DescriptorAllocator, PoolSizeRatio},
     frames::{FRAMES_IN_FLIGHT, FrameData, create_frames},
+    pipeline::BackgroundPipeline,
+    shader::ShaderCompiler,
     swapchain::{self, Swapchain},
-    texture::{AllocatedImage, copy_image_to_image},
+    texture::{DrawImage, copy_image_to_image},
     utils::{image_subresource_range, semaphore_submit_info, transition_image},
     vulkan::Vulkan,
 };
@@ -20,7 +23,10 @@ pub struct Engine {
     swapchain: Swapchain,
     frames: [FrameData; FRAMES_IN_FLIGHT],
     frame_index: usize,
-    draw_image: AllocatedImage,
+    shader_compiler: ShaderCompiler,
+    descriptor_allocator: DescriptorAllocator,
+    draw_image: DrawImage,
+    background_pipeline: BackgroundPipeline,
 }
 
 impl Drop for Engine {
@@ -31,7 +37,9 @@ impl Drop for Engine {
             f.destroy(device);
         }
 
-        // Delete allocate by vma
+        //
+        self.background_pipeline.destroy(device);
+        self.descriptor_allocator.destroy_pool(device);
         self.draw_image.destroy(device, &self.allocator);
 
         unsafe { ManuallyDrop::drop(&mut self.allocator) };
@@ -68,14 +76,20 @@ impl Engine {
         )?;
         let frames = create_frames(&vulkan)?;
 
-        let mut allocator_info = vk_mem::AllocatorCreateInfo::new(
-            vulkan.instance(),
-            vulkan.device(),
-            vulkan.physical_device(),
-        );
+        let device = vulkan.device();
+        let mut allocator_info =
+            vk_mem::AllocatorCreateInfo::new(vulkan.instance(), device, vulkan.physical_device());
         allocator_info.flags = vk_mem::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
         let allocator = unsafe { vk_mem::Allocator::new(allocator_info) }?;
-        let draw_image = AllocatedImage::new(&window, &vulkan, &allocator)?;
+        let shader_compiler = ShaderCompiler::new()?;
+
+        let descriptor_allocator = DescriptorAllocator::new(
+            device,
+            10,
+            &[PoolSizeRatio::new(vk::DescriptorType::STORAGE_IMAGE, 1.0)],
+        )?;
+        let draw_image = DrawImage::new(&window, &vulkan, &allocator, &descriptor_allocator)?;
+        let background_pipeline = BackgroundPipeline::new(device, &shader_compiler, &draw_image)?;
         Ok(Self {
             window: Arc::new(window),
             render: true,
@@ -85,14 +99,14 @@ impl Engine {
             frame_index: 0,
             allocator: ManuallyDrop::new(allocator),
             draw_image,
+            shader_compiler,
+            descriptor_allocator,
+            background_pipeline,
         })
     }
 
     const fn get_current_frame(&self) -> &FrameData {
         &self.frames[self.frame_index % FRAMES_IN_FLIGHT]
-    }
-    const fn get_current_frame_mut(&mut self) -> &mut FrameData {
-        &mut self.frames[self.frame_index % FRAMES_IN_FLIGHT]
     }
 
     fn draw_background(&self, cmd: vk::CommandBuffer) {

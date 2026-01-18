@@ -108,10 +108,12 @@ const DEVICE_EXTENSION_NAMES: &[*const i8] = &[
     ash::khr::portability_subset::NAME.as_ptr(),
 ];
 
+#[derive(Debug)]
 pub struct QueueFamilyIndices {
     pub graphics: u32,
     pub present: u32,
     pub transfer: u32,
+    pub compute: u32,
 }
 
 impl QueueFamilyIndices {
@@ -133,6 +135,13 @@ impl QueueFamilyIndices {
                 (prop.queue_flags.contains(vk::QueueFlags::GRAPHICS)).then_some(index)
             })
             .ok_or_eyre("could not find graphics")? as u32;
+        let compute = props
+            .iter()
+            .enumerate()
+            .find_map(|(index, prop)| {
+                (prop.queue_flags.contains(vk::QueueFlags::COMPUTE)).then_some(index)
+            })
+            .ok_or_eyre("could not find compute")? as u32;
         let present = props
             .iter()
             .enumerate()
@@ -161,11 +170,12 @@ impl QueueFamilyIndices {
             graphics,
             present,
             transfer,
+            compute,
         })
     }
 }
 
-fn select_physical_device_and_graphics_queue(
+fn select_physical_device(
     entry: &ash::Entry,
     instance: &ash::Instance,
     surface: vk::SurfaceKHR,
@@ -268,7 +278,7 @@ impl Vulkan {
         };
 
         let (physical_device, queue_family_indices) =
-            select_physical_device_and_graphics_queue(&entry, &instance, surface, api_version)?;
+            select_physical_device(&entry, &instance, surface, api_version)?;
         let device = build_device(&instance, physical_device, &queue_family_indices)?;
         let graphics_queue = unsafe { device.get_device_queue(queue_family_indices.graphics, 0) };
         let present_queue = unsafe { device.get_device_queue(queue_family_indices.present, 0) };

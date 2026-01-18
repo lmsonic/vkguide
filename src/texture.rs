@@ -2,7 +2,10 @@ use ash::vk;
 use vk_mem::Alloc;
 use winit::window::Window;
 
-use crate::vulkan::Vulkan;
+use crate::{
+    descriptors::{DescriptorAllocator, DescriptorLayoutBuilder},
+    vulkan::Vulkan,
+};
 
 pub fn copy_image_to_image(
     device: &ash::Device,
@@ -78,7 +81,67 @@ pub fn image_view_create_info<'a>(
                 .level_count(1),
         )
 }
+pub struct DrawImage {
+    image: AllocatedImage,
+    descriptor_set: vk::DescriptorSet,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+}
 
+impl std::ops::Deref for DrawImage {
+    type Target = AllocatedImage;
+
+    fn deref(&self) -> &Self::Target {
+        &self.image
+    }
+}
+
+impl DrawImage {
+    pub fn new(
+        window: &Window,
+        vulkan: &Vulkan,
+        allocator: &vk_mem::Allocator,
+        descriptor_allocator: &DescriptorAllocator,
+    ) -> eyre::Result<Self> {
+        let device = vulkan.device();
+        let image = AllocatedImage::new(window, vulkan, allocator)?;
+        let descriptor_set_layout = DescriptorLayoutBuilder::new()
+            .add_binding(0, vk::DescriptorType::STORAGE_IMAGE)
+            .build(device, vk::ShaderStageFlags::COMPUTE)?;
+        let descriptor_set = descriptor_allocator.allocate(device, descriptor_set_layout)?[0];
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::GENERAL)
+            .image_view(image.image_view());
+        let image_infos = [image_info];
+        let write_descriptor_set = vk::WriteDescriptorSet::default()
+            .dst_binding(0)
+            .dst_set(descriptor_set)
+            .image_info(&image_infos)
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE);
+        unsafe { device.update_descriptor_sets(&[write_descriptor_set], &[]) };
+        Ok(Self {
+            image,
+            descriptor_set,
+            descriptor_set_layout,
+        })
+    }
+    pub fn destroy(&mut self, device: &ash::Device, allocator: &vk_mem::Allocator) {
+        unsafe { device.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
+        self.image.destroy(device, allocator);
+    }
+
+    pub const fn allocated_image(&self) -> &AllocatedImage {
+        &self.image
+    }
+
+    pub const fn descriptor_set(&self) -> vk::DescriptorSet {
+        self.descriptor_set
+    }
+
+    pub const fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
+        self.descriptor_set_layout
+    }
+}
 pub struct AllocatedImage {
     image: vk::Image,
     image_view: vk::ImageView,
