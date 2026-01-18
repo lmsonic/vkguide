@@ -2,10 +2,7 @@ use ash::vk;
 use vk_mem::Alloc;
 use winit::window::Window;
 
-use crate::{
-    descriptors::{DescriptorAllocator, DescriptorLayoutBuilder},
-    vulkan::Vulkan,
-};
+use crate::descriptors::{DescriptorAllocator, DescriptorLayoutBuilder};
 
 pub fn copy_image_to_image(
     device: &ash::Device,
@@ -98,12 +95,11 @@ impl std::ops::Deref for DrawImage {
 impl DrawImage {
     pub fn new(
         window: &Window,
-        vulkan: &Vulkan,
+        device: &ash::Device,
         allocator: &vk_mem::Allocator,
         descriptor_allocator: &DescriptorAllocator,
     ) -> eyre::Result<Self> {
-        let device = vulkan.device();
-        let image = AllocatedImage::new(window, vulkan, allocator)?;
+        let image = AllocatedImage::new(window, device, allocator)?;
         let descriptor_set_layout = DescriptorLayoutBuilder::new()
             .add_binding(0, vk::DescriptorType::STORAGE_IMAGE)
             .build(device, vk::ShaderStageFlags::COMPUTE)?;
@@ -152,7 +148,7 @@ pub struct AllocatedImage {
 impl AllocatedImage {
     pub fn new(
         window: &Window,
-        vulkan: &Vulkan,
+        device: &ash::Device,
         allocator: &vk_mem::Allocator,
     ) -> eyre::Result<Self> {
         let width = window.inner_size().width;
@@ -177,7 +173,6 @@ impl AllocatedImage {
         let (image, allocation) = unsafe { allocator.create_image(&image_info, &alloc_info) }?;
 
         let image_view_info = image_view_create_info(format, image, vk::ImageAspectFlags::COLOR);
-        let device = vulkan.device().clone();
         let image_view = unsafe { device.create_image_view(&image_view_info, None) }?;
 
         Ok(Self {

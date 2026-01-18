@@ -1,7 +1,4 @@
-use std::{
-    fs::{File, read_to_string},
-    path::Path,
-};
+use std::{fs::read_to_string, path::Path};
 
 use ash::vk;
 use eyre::{Context, OptionExt};
@@ -57,8 +54,13 @@ impl ShaderCompiler {
         file_name: &str,
         entry_point: &str,
     ) -> Result<shaderc::CompilationArtifact, shaderc::Error> {
+        let mut options = shaderc::CompileOptions::new()?;
+        options.set_target_env(
+            shaderc::TargetEnv::Vulkan,
+            shaderc::EnvVersion::Vulkan1_3 as u32,
+        );
         self.compiler
-            .compile_into_spirv(source, kind, file_name, entry_point, None)
+            .compile_into_spirv(source, kind, file_name, entry_point, Some(&options))
     }
     pub fn compile_from_path(
         &self,

@@ -2,6 +2,8 @@ pub mod app;
 mod descriptors;
 mod engine;
 mod frames;
+mod gui;
+mod immediate;
 mod pipeline;
 mod shader;
 mod swapchain;

@@ -45,4 +45,12 @@ impl BackgroundPipeline {
         unsafe { device.destroy_pipeline_layout(self.layout, None) };
         unsafe { device.destroy_pipeline(self.pipeline, None) };
     }
+
+    pub fn pipeline(&self) -> vk::Pipeline {
+        self.pipeline
+    }
+
+    pub fn layout(&self) -> vk::PipelineLayout {
+        self.layout
+    }
 }

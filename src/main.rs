@@ -5,7 +5,7 @@ use tracing_subscriber::{
     layer::SubscriberExt,
     util::SubscriberInitExt as _,
 };
-use vkguide::app::App;
+use vkguide::app::DefaultAppWrapper;
 use winit::{
     event_loop::{ControlFlow, EventLoop},
     platform::run_on_demand::EventLoopExtRunOnDemand,
@@ -24,6 +24,6 @@ fn main() {
     let mut event_loop = EventLoop::new().unwrap();
 
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::new();
+    let mut app = DefaultAppWrapper::new();
     event_loop.run_app_on_demand(&mut app).unwrap();
 }

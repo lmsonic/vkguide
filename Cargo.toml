@@ -5,36 +5,33 @@ edition = "2024"
 
 [dependencies]
 
-time = { version = "0.3.44", features = [
-    "macros",
-    "alloc",
-], default-features = false }
+time = { version = "0.3.45", features = ["macros"], default-features = false }
 tracing-subscriber = { version = "0.3.22", features = [
-    "ansi",
     "env-filter",
     "local-time",
-    "smallvec",
+    "ansi",
 ], default-features = false }
-tracing = { version = "0.1.44", features = ["std"], default-features = false }
-ash = { version = "0.38.0", features = ["linked"] }
+tracing = { version = "0.1.44", default-features = false }
+ash = { version = "0.38.0", features = ["debug"], default-features = false }
 egui-ash-renderer = { version = "0.11.0", features = [
     "dynamic-rendering",
     "vk-mem",
 ] }
-features = { version = "0.10.0", default-features = false }
-glam = "0.30.10"
-image = { version = "0.25.9", default-features = false }
-tobj = "4.0.3"
-vk-mem = "0.5.0"
-
-x11 = { version = "2.21.0", default-features = false }
-winit = "0.30.12"
-ash-window = "0.13.0"
-eyre = { version = "0.6.12", default-features = false, features = [
-    "track-caller",
+vk-mem = { version = "0.5.0", default-features = false }
+winit = { version = "0.30.12", default-features = false, features = [
+    "x11",
+    "rwh_06",
 ] }
+ash-window = "0.13.0"
+eyre = { version = "0.6.12", default-features = false }
 color-eyre = "0.6.5"
 shaderc = "0.10.1"
+egui = { version = "0.33.3", default-features = false }
+egui_extras = "0.33.3"
+egui-winit = { version = "0.33.3", features = [
+    "bytemuck",
+], default-features = false }
+bon = { version = "3.8.2", default-features = false }
 [lints.rust]
 ambiguous_negative_literals = "warn"
 # missing_debug_implementations = "warn"

@@ -18,29 +18,28 @@ pub fn transition_image(
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
 ) {
+    fn layout_to_flag(layout: vk::ImageLayout) -> vk::AccessFlags2 {
+        match layout {
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags2::TRANSFER_READ,
+            vk::ImageLayout::PRESENT_SRC_KHR => vk::AccessFlags2::empty(),
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => {
+                vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                    | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                    | vk::AccessFlags2::COLOR_ATTACHMENT_READ_NONCOHERENT_EXT
+            }
+            _ => vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
+        }
+    }
     let subresource_range =
         image_subresource_range(if new_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL {
             vk::ImageAspectFlags::DEPTH
         } else {
             vk::ImageAspectFlags::COLOR
         });
-
-    let src_access_mask = match old_layout {
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags2::TRANSFER_READ,
-        vk::ImageLayout::PRESENT_SRC_KHR => vk::AccessFlags2::empty(),
-        _ => vk::AccessFlags2::MEMORY_WRITE,
-    };
-    let dst_access_mask = match new_layout {
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags2::TRANSFER_READ,
-        vk::ImageLayout::PRESENT_SRC_KHR => vk::AccessFlags2::empty(),
-        _ => vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
-    };
-
     let image_barrier = vk::ImageMemoryBarrier2::default()
-        .src_access_mask(src_access_mask)
-        .dst_access_mask(dst_access_mask)
+        .src_access_mask(layout_to_flag(old_layout))
+        .dst_access_mask(layout_to_flag(new_layout))
         .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .old_layout(old_layout)
@@ -59,12 +58,55 @@ pub fn image_subresource_range(aspect_flags: vk::ImageAspectFlags) -> vk::ImageS
         .layer_count(vk::REMAINING_ARRAY_LAYERS)
 }
 
+#[bon::builder]
 pub fn create_cmd_buffer_info<'a>(
     pool: vk::CommandPool,
-    count: u32,
+    count: Option<u32>,
 ) -> vk::CommandBufferAllocateInfo<'a> {
     vk::CommandBufferAllocateInfo::default()
         .command_pool(pool)
         .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(count)
+        .command_buffer_count(count.unwrap_or(1))
+}
+
+#[bon::builder]
+pub fn color_attachment_info<'a>(
+    view: vk::ImageView,
+    clear: Option<vk::ClearValue>,
+    layout: Option<vk::ImageLayout>,
+) -> ash::vk::RenderingAttachmentInfo<'a> {
+    let mut info = vk::RenderingAttachmentInfo::default()
+        .image_view(view)
+        .image_layout(layout.unwrap_or(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL))
+        .load_op(if clear.is_some() {
+            vk::AttachmentLoadOp::CLEAR
+        } else {
+            vk::AttachmentLoadOp::LOAD
+        })
+        .store_op(vk::AttachmentStoreOp::STORE);
+    if let Some(clear) = clear {
+        info.clear_value = clear;
+    }
+    info
+}
+
+#[bon::builder]
+pub fn rendering_info<'a>(
+    render_extent: vk::Extent2D,
+    color_attachments: &'a [vk::RenderingAttachmentInfo<'a>],
+    depth_attachment: Option<vk::RenderingAttachmentInfo<'a>>,
+) -> vk::RenderingInfo<'a> {
+    let mut info = vk::RenderingInfo::default()
+        .render_area(vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: render_extent,
+        })
+        .layer_count(1)
+        .color_attachments(color_attachments);
+
+    if let Some(depth) = depth_attachment {
+        info.p_depth_attachment = &raw const depth;
+    }
+
+    info
 }

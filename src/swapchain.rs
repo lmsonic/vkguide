@@ -13,6 +13,7 @@ pub struct Swapchain {
     image_views: Vec<vk::ImageView>,
     render_semaphores: Vec<vk::Semaphore>,
     extent: vk::Extent2D,
+    format: vk::Format,
 }
 
 impl Swapchain {
@@ -105,6 +106,7 @@ impl Swapchain {
                         b: vk::ComponentSwizzle::B,
                         a: vk::ComponentSwizzle::A,
                     })
+                    .format(image_format)
                     .image(*i)
                     .subresource_range(subresource_range);
                 unsafe { device.create_image_view(&info, None).ok() }
@@ -121,6 +123,7 @@ impl Swapchain {
             image_views,
             render_semaphores,
             extent,
+            format: image_format,
         })
     }
     pub fn destroy(
@@ -155,5 +158,9 @@ impl Swapchain {
 
     pub const fn extent(&self) -> vk::Extent2D {
         self.extent
+    }
+
+    pub fn format(&self) -> vk::Format {
+        self.format
     }
 }
