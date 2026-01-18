@@ -9,7 +9,7 @@ pub fn create_frames(vulkan: &Vulkan) -> eyre::Result<[FrameData; FRAMES_IN_FLIG
         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
         .queue_family_index(vulkan.queue_family_indices().graphics);
 
-    let mut frame_datas = [FrameData::default(); FRAMES_IN_FLIGHT];
+    let mut frame_datas = [const { FrameData::uninit() }; FRAMES_IN_FLIGHT];
     let device = vulkan.device();
     let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
     let semaphore_info = vk::SemaphoreCreateInfo::default();
@@ -26,7 +26,6 @@ pub fn create_frames(vulkan: &Vulkan) -> eyre::Result<[FrameData; FRAMES_IN_FLIG
     Ok(frame_datas)
 }
 
-#[derive(Default, Clone, Copy)]
 pub struct FrameData {
     cmd_pool: vk::CommandPool,
     cmd_buffer: vk::CommandBuffer,
@@ -35,6 +34,21 @@ pub struct FrameData {
 }
 
 impl FrameData {
+    const fn uninit() -> Self {
+        Self {
+            cmd_pool: vk::CommandPool::null(),
+            cmd_buffer: vk::CommandBuffer::null(),
+            render_fence: vk::Fence::null(),
+            swapchain_semaphore: vk::Semaphore::null(),
+        }
+    }
+
+    pub fn destroy(&mut self, device: &ash::Device) {
+        unsafe { device.destroy_command_pool(self.cmd_pool, None) };
+        unsafe { device.destroy_fence(self.render_fence, None) };
+        unsafe { device.destroy_semaphore(self.swapchain_semaphore, None) };
+    }
+
     pub const fn cmd_pool(&self) -> vk::CommandPool {
         self.cmd_pool
     }

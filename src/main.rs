@@ -6,7 +6,10 @@ use tracing_subscriber::{
     util::SubscriberInitExt as _,
 };
 use vkguide::app::App;
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::{
+    event_loop::{ControlFlow, EventLoop},
+    platform::run_on_demand::EventLoopExtRunOnDemand,
+};
 
 fn main() {
     let timer = LocalTime::new(format_description!(
@@ -18,9 +21,9 @@ fn main() {
         .with(EnvFilter::from_default_env())
         .init();
     color_eyre::install().unwrap();
-    let event_loop = EventLoop::new().unwrap();
+    let mut event_loop = EventLoop::new().unwrap();
 
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App::new();
-    event_loop.run_app(&mut app).unwrap();
+    event_loop.run_app_on_demand(&mut app).unwrap();
 }

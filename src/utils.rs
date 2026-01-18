@@ -24,9 +24,23 @@ pub fn transition_image(
         } else {
             vk::ImageAspectFlags::COLOR
         });
+
+    let src_access_mask = match old_layout {
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags2::TRANSFER_READ,
+        vk::ImageLayout::PRESENT_SRC_KHR => vk::AccessFlags2::empty(),
+        _ => vk::AccessFlags2::MEMORY_WRITE,
+    };
+    let dst_access_mask = match new_layout {
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags2::TRANSFER_READ,
+        vk::ImageLayout::PRESENT_SRC_KHR => vk::AccessFlags2::empty(),
+        _ => vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
+    };
+
     let image_barrier = vk::ImageMemoryBarrier2::default()
-        .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-        .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+        .src_access_mask(src_access_mask)
+        .dst_access_mask(dst_access_mask)
         .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .old_layout(old_layout)

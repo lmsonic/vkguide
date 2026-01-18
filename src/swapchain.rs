@@ -12,6 +12,7 @@ pub struct Swapchain {
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
     render_semaphores: Vec<vk::Semaphore>,
+    extent: vk::Extent2D,
 }
 
 impl Swapchain {
@@ -119,10 +120,24 @@ impl Swapchain {
             images,
             image_views,
             render_semaphores,
+            extent,
         })
     }
+    pub fn destroy(
+        &mut self,
+        device: &ash::Device,
+        swapchain_device: &ash::khr::swapchain::Device,
+    ) {
+        unsafe { swapchain_device.destroy_swapchain(self.swapchain, None) };
+        for v in &self.image_views {
+            unsafe { device.destroy_image_view(*v, None) };
+        }
+        for s in &self.render_semaphores {
+            unsafe { device.destroy_semaphore(*s, None) };
+        }
+    }
 
-    pub fn swapchain(&self) -> vk::SwapchainKHR {
+    pub const fn swapchain(&self) -> vk::SwapchainKHR {
         self.swapchain
     }
 
@@ -136,5 +151,9 @@ impl Swapchain {
 
     pub fn render_semaphores(&self) -> &[vk::Semaphore] {
         &self.render_semaphores
+    }
+
+    pub const fn extent(&self) -> vk::Extent2D {
+        self.extent
     }
 }

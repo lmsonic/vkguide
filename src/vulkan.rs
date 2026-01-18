@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     ffi::{self, CStr},
 };
 
@@ -281,9 +281,8 @@ impl Vulkan {
             physical_device,
             device,
             surface,
-
-            graphics_queue,
             queue_family_indices,
+            graphics_queue,
             present_queue,
             transfer_queue,
         })
