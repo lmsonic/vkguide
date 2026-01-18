@@ -28,13 +28,15 @@ impl Drop for Engine {
             unsafe { device.destroy_command_pool(f.cmd_pool(), None) };
             unsafe { device.destroy_fence(f.render_fence(), None) };
             unsafe { device.destroy_semaphore(f.swapchain_semaphore(), None) };
-            unsafe { device.destroy_semaphore(f.render_semaphore(), None) };
         }
 
         let swapchain_device = self.vulkan.swapchain_device();
         unsafe { swapchain_device.destroy_swapchain(self.swapchain.swapchain(), None) };
         for v in self.swapchain.image_views() {
             unsafe { device.destroy_image_view(*v, None) };
+        }
+        for s in self.swapchain.render_semaphores() {
+            unsafe { device.destroy_semaphore(*s, None) };
         }
         let debug_instance = self.vulkan.debug_instance();
         unsafe { device.destroy_device(None) };
@@ -131,14 +133,13 @@ impl Engine {
             .command_buffer(cmd)
             .device_mask(0);
 
+        let render_semaphore = self.swapchain.render_semaphores()[image_index as usize];
         let wait_info = semaphore_submit_info(
             vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             current_frame.swapchain_semaphore(),
         );
-        let signal_info = semaphore_submit_info(
-            vk::PipelineStageFlags2::ALL_GRAPHICS,
-            current_frame.render_semaphore(),
-        );
+        let signal_info =
+            semaphore_submit_info(vk::PipelineStageFlags2::ALL_GRAPHICS, render_semaphore);
 
         let wait_infos = [wait_info];
         let signal_infos = [signal_info];
@@ -154,7 +155,7 @@ impl Engine {
         }?;
 
         let swapchains = [self.swapchain.swapchain()];
-        let wait_semaphores = [current_frame.render_semaphore()];
+        let wait_semaphores = [render_semaphore];
         let image_indices = [image_index];
         let present_info = vk::PresentInfoKHR::default()
             .swapchains(&swapchains)

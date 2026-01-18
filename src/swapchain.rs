@@ -11,6 +11,7 @@ pub struct Swapchain {
     swapchain: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
+    render_semaphores: Vec<vk::Semaphore>,
 }
 
 impl Swapchain {
@@ -108,11 +109,16 @@ impl Swapchain {
                 unsafe { device.create_image_view(&info, None).ok() }
             })
             .collect();
-
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        let mut render_semaphores = Vec::with_capacity(images.len());
+        for _ in 0..images.len() {
+            render_semaphores.push(unsafe { device.create_semaphore(&semaphore_info, None) }?);
+        }
         Ok(Self {
             swapchain,
             images,
             image_views,
+            render_semaphores,
         })
     }
 
@@ -126,5 +132,9 @@ impl Swapchain {
 
     pub fn image_views(&self) -> &[vk::ImageView] {
         &self.image_views
+    }
+
+    pub fn render_semaphores(&self) -> &[vk::Semaphore] {
+        &self.render_semaphores
     }
 }

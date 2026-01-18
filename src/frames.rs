@@ -21,7 +21,6 @@ pub fn create_frames(vulkan: &Vulkan) -> eyre::Result<[FrameData; FRAMES_IN_FLIG
         frame_data.cmd_pool = pool;
         frame_data.cmd_buffer = buffer[0];
         frame_data.render_fence = unsafe { device.create_fence(&fence_info, None) }?;
-        frame_data.render_semaphore = unsafe { device.create_semaphore(&semaphore_info, None) }?;
         frame_data.swapchain_semaphore = unsafe { device.create_semaphore(&semaphore_info, None) }?;
     }
     Ok(frame_datas)
@@ -33,7 +32,6 @@ pub struct FrameData {
     cmd_buffer: vk::CommandBuffer,
     render_fence: vk::Fence,
     swapchain_semaphore: vk::Semaphore,
-    render_semaphore: vk::Semaphore,
 }
 
 impl FrameData {
@@ -47,10 +45,6 @@ impl FrameData {
 
     pub const fn render_fence(&self) -> vk::Fence {
         self.render_fence
-    }
-
-    pub const fn render_semaphore(&self) -> vk::Semaphore {
-        self.render_semaphore
     }
 
     pub const fn swapchain_semaphore(&self) -> vk::Semaphore {
