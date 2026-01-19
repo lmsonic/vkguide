@@ -1,0 +1,74 @@
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform image2D image;
+
+layout(push_constant) uniform constants {
+  vec4 data1;
+  vec4 data2;
+  vec4 data3;
+  vec4 data4;
+}
+PushConstants;
+
+float noise_2d(in vec2 x) {
+  float xhash = cos(x.x * 37.0);
+  float yhash = cos(x.y * 57.0);
+  return fract(415.92653 * (xhash + yhash));
+}
+
+float noisy_star_field(in vec2 sample_pos, float thresh) {
+  float star_val = noise_2d(sample_pos);
+  if (star_val >= thresh) {
+    return pow((star_val - thresh) / (1.0 - thresh), 6.0);
+  } else {
+    return 0.0;
+  }
+}
+
+// Stabilize NoisyStarField() by only sampling at integer values.
+float stable_star_field(in vec2 sample_pos, float thresh) {
+  // Linear interpolation between four samples.
+  // Note: This approach has some visual artifacts.
+  // There must be a better way to "anti alias" the star field.
+  float fract_x = fract(sample_pos.x);
+  float fract_y = fract(sample_pos.y);
+  vec2 floor_sample = floor(sample_pos);
+  float v1 = noisy_star_field(floor_sample, thresh);
+  float v2 = noisy_star_field(floor_sample + vec2(0.0, 1.0), thresh);
+  float v3 = noisy_star_field(floor_sample + vec2(1.0, 0.0), thresh);
+  float v4 = noisy_star_field(floor_sample + vec2(1.0, 1.0), thresh);
+  float star_val = v1 * (1.0 - fract_x) * (1.0 - fract_y) +
+                   v2 * (1.0 - fract_x) * fract_y +
+                   v3 * fract_x * (1.0 - fract_y) + v4 * fract_x * fract_y;
+  return star_val;
+}
+
+void main_image(out vec4 color, in ivec2 texel_coord) {
+  ivec2 resolution = imageSize(image);
+  vec3 sky_color = PushConstants.data1.xyz * texel_coord.y / resolution.y;
+  // Note: Choose fThreshhold in the range [0.99, 0.9999].
+  // Higher values (i.e., closer to one) yield a sparser starfield.
+  float starfield_thresh = PushConstants.data1.w;
+
+  // Stars with a slow crawl.
+  float x_rate = 0.2;
+  float y_rate = -0.06;
+  vec2 sample_pos = texel_coord.xy + vec2(x_rate, y_rate);
+  float star_val = stable_star_field(sample_pos, starfield_thresh);
+  sky_color += vec3(star_val);
+
+  color = vec4(sky_color, 1.0);
+}
+
+void main() {
+  ivec2 texel_coord = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 size = imageSize(image);
+
+  if (texel_coord.x < size.x && texel_coord.y < size.y) {
+    vec4 color;
+    main_image(color, texel_coord);
+    imageStore(image, texel_coord, color);
+  }
+}

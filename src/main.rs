@@ -1,3 +1,4 @@
+// use egui_demo_lib::DemoWindows;
 use time::macros::format_description;
 use tracing_subscriber::{
     EnvFilter,
@@ -5,7 +6,7 @@ use tracing_subscriber::{
     layer::SubscriberExt,
     util::SubscriberInitExt as _,
 };
-use vkguide::app::DefaultAppWrapper;
+use vkguide::app::AppWrapper;
 use winit::{
     event_loop::{ControlFlow, EventLoop},
     platform::run_on_demand::EventLoopExtRunOnDemand,
@@ -24,6 +25,6 @@ fn main() {
     let mut event_loop = EventLoop::new().unwrap();
 
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = DefaultAppWrapper::new();
+    let mut app = AppWrapper::new();
     event_loop.run_app_on_demand(&mut app).unwrap();
 }

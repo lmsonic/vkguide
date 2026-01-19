@@ -1,23 +1,26 @@
 use std::{mem::ManuallyDrop, sync::Arc};
 
 use ash::vk;
+use egui::{DragValue, Ui, vec2};
+use glam::Vec4;
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 use crate::{
+    compute::{ComputeEffect, create_compute_effects},
     descriptors::{DescriptorAllocator, PoolSizeRatio},
     frames::Frames,
-    gui::{Gui, GuiApp},
+    graphics::TrianglePipeline,
+    gui::Gui,
     immediate::ImmediateSubmit,
-    pipeline::BackgroundPipeline,
     shader::ShaderCompiler,
     swapchain::{self, Swapchain},
     texture::{DrawImage, copy_image_to_image},
-    utils::{semaphore_submit_info, transition_image},
+    utils::{color_attachment_info, rendering_info, semaphore_submit_info, transition_image},
     vulkan::Vulkan,
 };
 
 pub struct Engine {
-    pub window: Arc<Window>,
+    window: Arc<Window>,
     pub render: bool,
     vulkan: Vulkan,
     allocator: ManuallyDrop<vk_mem::Allocator>,
@@ -26,22 +29,25 @@ pub struct Engine {
     shader_compiler: ShaderCompiler,
     descriptor_allocator: DescriptorAllocator,
     draw_image: DrawImage,
-    background_pipeline: BackgroundPipeline,
     immediate_submit: ImmediateSubmit,
-    gui: ManuallyDrop<Gui>,
+    background_effects: Vec<ComputeEffect>,
+    current_background_effect: usize,
+    triangle_pipeline: TrianglePipeline,
 }
 
 impl Engine {
-    pub fn destroy(&mut self, egui_app: &mut impl GuiApp) {
+    pub fn destroy(&mut self, gui: &mut ManuallyDrop<Gui>) {
         unsafe { self.vulkan.device().device_wait_idle() }.unwrap();
-        egui_app.destroy(self);
         let device = self.vulkan.device();
 
         self.frames.destroy(device);
         //
-        unsafe { ManuallyDrop::drop(&mut self.gui) };
+        self.triangle_pipeline.destroy(device);
+        unsafe { ManuallyDrop::drop(gui) };
         self.immediate_submit.destroy(device);
-        self.background_pipeline.destroy(device);
+        for e in &mut self.background_effects {
+            e.destroy(device);
+        }
         self.descriptor_allocator.destroy_pool(device);
         self.draw_image.destroy(device, &self.allocator);
 
@@ -64,7 +70,7 @@ impl Engine {
         let instance = self.vulkan.instance();
         unsafe { instance.destroy_instance(None) };
     }
-    pub fn new(window: Window) -> eyre::Result<Self> {
+    pub fn new(window: Arc<Window>) -> eyre::Result<Self> {
         let vulkan = Vulkan::new(&window)?;
         let swapchain = Swapchain::new(
             &window,
@@ -89,11 +95,11 @@ impl Engine {
             &[PoolSizeRatio::new(vk::DescriptorType::STORAGE_IMAGE, 1.0)],
         )?;
         let draw_image = DrawImage::new(&window, device, &allocator, &descriptor_allocator)?;
-        let background_pipeline = BackgroundPipeline::new(device, &shader_compiler, &draw_image)?;
         let immediate_submit = ImmediateSubmit::new(device, vulkan.queue_family_indices())?;
-        let gui = Gui::new(&window, &vulkan, &swapchain)?;
+        let background_effects = create_compute_effects(device, &draw_image, &shader_compiler)?;
+        let triangle_pipeline = TrianglePipeline::new(device, &shader_compiler, &draw_image)?;
         Ok(Self {
-            window: Arc::new(window),
+            window,
             render: true,
             vulkan,
             swapchain,
@@ -102,37 +108,52 @@ impl Engine {
             draw_image,
             shader_compiler,
             descriptor_allocator,
-            background_pipeline,
             immediate_submit,
-            gui: ManuallyDrop::new(gui),
+            background_effects,
+            current_background_effect: 0,
+            triangle_pipeline,
         })
+    }
+    fn draw_extent_2d(&self) -> vk::Extent2D {
+        vk::Extent2D {
+            width: self.draw_image.extent().width,
+            height: self.draw_image.extent().height,
+        }
     }
 
     fn draw_background(&self, cmd: vk::CommandBuffer) {
         let device = self.vulkan.device();
-
+        let background_effect = &self.background_effects[self.current_background_effect];
         unsafe {
             device.cmd_bind_pipeline(
                 cmd,
                 vk::PipelineBindPoint::COMPUTE,
-                self.background_pipeline.pipeline(),
+                background_effect.pipeline(),
             );
         };
         unsafe {
             device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::COMPUTE,
-                self.background_pipeline.layout(),
+                background_effect.layout(),
                 0,
                 &[self.draw_image.descriptor_set()],
                 &[],
             );
         };
 
-        let draw_extent = vk::Extent2D {
-            width: self.draw_image.extent().width,
-            height: self.draw_image.extent().height,
+        let push_constant = background_effect.data;
+        let push_constants_bytes = bytemuck::bytes_of(&push_constant);
+        unsafe {
+            device.cmd_push_constants(
+                cmd,
+                background_effect.layout(),
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                push_constants_bytes,
+            );
         };
+        let draw_extent = self.draw_extent_2d();
         unsafe {
             device.cmd_dispatch(
                 cmd,
@@ -143,30 +164,119 @@ impl Engine {
         };
     }
 
-    pub fn render(&mut self, gui_app: &mut impl GuiApp) -> eyre::Result<()> {
-        let device = &self.vulkan.device().clone();
-        let current_frame = self.frames.get_current_frame();
-        unsafe { device.wait_for_fences(&[current_frame.render_fence()], true, u64::MAX) }?;
-        unsafe { device.reset_fences(&[current_frame.render_fence()]) }?;
-        self.gui.free_textures()?;
+    pub(crate) fn build_ui(&mut self, ctx: &egui::Context) {
+        fn vec4_drag_value(ui: &mut Ui, v: &mut Vec4, label: &str) {
+            let result = v;
+            let size = vec2(48.0, 20.0);
+            ui.label(label);
+            ui.columns(4, |ui| {
+                ui[0].add_sized(size, DragValue::new(&mut result.x).speed(0.01));
+                ui[1].add_sized(size, DragValue::new(&mut result.y).speed(0.01));
+                ui[2].add_sized(size, DragValue::new(&mut result.z).speed(0.01));
+                ui[3].add_sized(size, DragValue::new(&mut result.w).speed(0.01));
+            });
+        }
+        let background_effects_len = self.background_effects.len();
+        let selected = &mut self.background_effects[self.current_background_effect];
+        egui::Window::new("Background").show(ctx, |ui| {
+            ui.label(selected.name());
+            let slider = egui::Slider::new(
+                &mut self.current_background_effect,
+                0..=background_effects_len - 1,
+            );
+            ui.add(slider.text("Effect Index"));
+            vec4_drag_value(ui, &mut selected.data.data1, "data1");
+            vec4_drag_value(ui, &mut selected.data.data2, "data2");
+            vec4_drag_value(ui, &mut selected.data.data3, "data3");
+            vec4_drag_value(ui, &mut selected.data.data4, "data4");
+        });
+    }
+    fn draw_geometry(&self, cmd: vk::CommandBuffer) {
+        let device = self.vulkan.device();
+        let color_attachment_info = color_attachment_info()
+            .view(self.draw_image.image_view())
+            .call();
+        let color_attachment_infos = [color_attachment_info];
+        let draw_extent = self.draw_extent_2d();
+        let rendering_info = rendering_info()
+            .color_attachments(&color_attachment_infos)
+            .render_extent(draw_extent)
+            .call();
+        unsafe { device.cmd_begin_rendering(cmd, &rendering_info) };
 
-        let (primitives, pixels_per_point) =
-            self.gui
-                .generate_ui(gui_app, &self.window, &self.vulkan, &self.immediate_submit)?;
+        unsafe {
+            device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.triangle_pipeline.pipeline(),
+            );
+        };
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: draw_extent.width as f32,
+            height: draw_extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        unsafe { device.cmd_set_viewport(cmd, 0, &[viewport]) };
+
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: draw_extent,
+        };
+        unsafe { device.cmd_set_scissor(cmd, 0, &[scissor]) };
+
+        unsafe { device.cmd_draw(cmd, 3, 1, 0, 0) };
+
+        unsafe { device.cmd_end_rendering(cmd) };
+    }
+    pub fn render(&mut self, gui: &mut Gui) -> eyre::Result<()> {
+        let device = self.vulkan.device();
+        unsafe {
+            device.wait_for_fences(
+                &[self.frames.get_current_frame().render_fence()],
+                true,
+                u64::MAX,
+            )
+        }?;
+        unsafe { device.reset_fences(&[self.frames.get_current_frame().render_fence()]) }?;
+        gui.free_textures()?;
+
+        let (primitives, pixels_per_point) = gui.generate_ui(self)?;
 
         let swapchain_device = self.vulkan.swapchain_device();
         let (image_index, _) = unsafe {
             swapchain_device.acquire_next_image(
                 self.swapchain.swapchain(),
                 u64::MAX,
-                current_frame.swapchain_semaphore(),
+                self.frames.get_current_frame().swapchain_semaphore(),
                 vk::Fence::null(),
             )
         }?;
 
-        let cmd = current_frame.cmd_buffer();
-        unsafe { device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty()) }?;
+        let cmd = self.frames.get_current_frame().cmd_buffer();
+        self.record_commands(gui, &primitives, pixels_per_point, image_index, cmd)?;
 
+        let render_semaphore = self.submit(image_index, cmd)?;
+
+        self.present(&swapchain_device, image_index, render_semaphore)?;
+
+        self.frames.advance();
+
+        Ok(())
+    }
+
+    fn record_commands(
+        &self,
+        gui: &mut Gui,
+        primitives: &[egui::ClippedPrimitive],
+        pixels_per_point: f32,
+        image_index: u32,
+        cmd: vk::CommandBuffer,
+    ) -> Result<(), eyre::Error> {
+        let device = self.vulkan.device();
+        unsafe { device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty()) }?;
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe { device.begin_command_buffer(cmd, &begin_info) }?;
@@ -179,12 +289,20 @@ impl Engine {
             vk::ImageLayout::GENERAL,
         );
         self.draw_background(cmd);
-
         transition_image(
             device,
             cmd,
             draw_image,
             vk::ImageLayout::GENERAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        );
+
+        self.draw_geometry(cmd);
+        transition_image(
+            device,
+            cmd,
+            draw_image,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
         );
         let swapchain_image = self.swapchain.images()[image_index as usize];
@@ -195,11 +313,7 @@ impl Engine {
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         );
-
-        let draw_extent = vk::Extent2D {
-            width: self.draw_image.extent().width,
-            height: self.draw_image.extent().height,
-        };
+        let draw_extent = self.draw_extent_2d();
         copy_image_to_image(
             device,
             cmd,
@@ -216,13 +330,13 @@ impl Engine {
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         );
         let swapchain_image_view = self.swapchain.image_views()[image_index as usize];
-        self.gui.draw_gui(
+        gui.draw_gui(
             device,
             cmd,
             swapchain_image_view,
             self.swapchain.extent(),
             pixels_per_point,
-            &primitives,
+            primitives,
         )?;
         transition_image(
             device,
@@ -232,11 +346,19 @@ impl Engine {
             vk::ImageLayout::PRESENT_SRC_KHR,
         );
         unsafe { device.end_command_buffer(cmd) }?;
+        Ok(())
+    }
 
+    fn submit(
+        &self,
+        image_index: u32,
+        cmd: vk::CommandBuffer,
+    ) -> Result<vk::Semaphore, eyre::Error> {
+        let device = self.vulkan.device();
+        let current_frame = self.frames.get_current_frame();
         let cmd_info = vk::CommandBufferSubmitInfo::default()
             .command_buffer(cmd)
             .device_mask(0);
-
         let render_semaphore = self.swapchain.render_semaphores()[image_index as usize];
         let wait_info = semaphore_submit_info(
             vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
@@ -244,7 +366,6 @@ impl Engine {
         );
         let signal_info =
             semaphore_submit_info(vk::PipelineStageFlags2::ALL_GRAPHICS, render_semaphore);
-
         let wait_infos = [wait_info];
         let signal_infos = [signal_info];
         let cmd_infos = [cmd_info];
@@ -252,12 +373,19 @@ impl Engine {
             .wait_semaphore_infos(&wait_infos)
             .signal_semaphore_infos(&signal_infos)
             .command_buffer_infos(&cmd_infos);
-
         let graphics_queue = self.vulkan.graphics_queue();
         unsafe {
             device.queue_submit2(graphics_queue, &[submit_info], current_frame.render_fence())
         }?;
+        Ok(render_semaphore)
+    }
 
+    fn present(
+        &mut self,
+        swapchain_device: &ash::khr::swapchain::Device,
+        image_index: u32,
+        render_semaphore: vk::Semaphore,
+    ) -> Result<(), eyre::Error> {
         let swapchains = [self.swapchain.swapchain()];
         let wait_semaphores = [render_semaphore];
         let image_indices = [image_index];
@@ -265,21 +393,34 @@ impl Engine {
             .swapchains(&swapchains)
             .wait_semaphores(&wait_semaphores)
             .image_indices(&image_indices);
-
         unsafe { swapchain_device.queue_present(self.vulkan.present_queue(), &present_info) }?;
-
-        self.frames.advance();
-
         Ok(())
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {}
 
-    pub fn window_event(&mut self, event: &WindowEvent) {
+    pub fn window_event(&mut self, event: &WindowEvent, gui: &mut Gui) {
+        let _ = gui.winit_mut().on_window_event(&self.window, event);
         #[allow(clippy::single_match)]
         match event {
             WindowEvent::Occluded(occluded) => self.render = !occluded,
             _ => {}
         }
+    }
+
+    pub fn window(&self) -> &Window {
+        &self.window
+    }
+
+    pub const fn vulkan(&self) -> &Vulkan {
+        &self.vulkan
+    }
+
+    pub const fn swapchain(&self) -> &Swapchain {
+        &self.swapchain
+    }
+
+    pub const fn immediate_submit(&self) -> &ImmediateSubmit {
+        &self.immediate_submit
     }
 }

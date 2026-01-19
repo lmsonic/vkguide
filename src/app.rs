@@ -1,48 +1,34 @@
-use std::time::Duration;
+use std::{mem::ManuallyDrop, sync::Arc, time::Duration};
 
 use winit::{
     application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent,
     event_loop::ActiveEventLoop, window::Window,
 };
 
-use crate::{engine::Engine, gui::GuiApp};
+use crate::{engine::Engine, gui::Gui};
 
-pub struct DefaultGuiApp;
-
-impl GuiApp for DefaultGuiApp {
-    fn new(engine: &mut Engine) -> eyre::Result<Self>
-    where
-        Self: std::marker::Sized,
-    {
-        Ok(Self {})
-    }
-
-    fn build_ui(&mut self, _ctx: &egui::Context) {}
-}
-pub type DefaultAppWrapper = AppWrapper<DefaultGuiApp>;
-
-pub struct AppWrapper<A: GuiApp> {
+pub struct AppWrapper {
     pub(crate) engine: Option<Engine>,
-    pub(crate) gui_app: Option<A>,
+    pub(crate) gui: Option<ManuallyDrop<Gui>>,
 }
 
-impl<A: GuiApp> AppWrapper<A> {
+impl AppWrapper {
     #[must_use]
     pub const fn new() -> Self {
         Self {
             engine: None,
-            gui_app: None,
+            gui: None,
         }
     }
 }
 
-impl<A: GuiApp> Default for AppWrapper<A> {
+impl Default for AppWrapper {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<A: GuiApp> ApplicationHandler for AppWrapper<A> {
+impl ApplicationHandler for AppWrapper {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         const WINDOW_WIDTH: u32 = 1080;
         const WINDOW_HEIGHT: u32 = 720;
@@ -55,15 +41,19 @@ impl<A: GuiApp> ApplicationHandler for AppWrapper<A> {
             )
             .expect("could not create window");
         window.request_redraw();
-        let mut engine = Engine::new(window).expect("could not create engine");
-        self.gui_app = Some(GuiApp::new(&mut engine).expect("could not create gui app"));
+        let window = Arc::new(window);
+        let engine = Engine::new(Arc::clone(&window)).expect("could not create engine");
+        let gui = ManuallyDrop::new(
+            Gui::new(&window, engine.vulkan(), engine.swapchain()).expect("could not create gui"),
+        );
+        self.gui = Some(gui);
         self.engine = Some(engine);
     }
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(engine) = &mut self.engine
-            && let Some(gui_app) = &mut self.gui_app
+        if let Some(mut engine) = self.engine.take()
+            && let Some(mut gui) = self.gui.take()
         {
-            engine.destroy(gui_app);
+            engine.destroy(&mut gui);
         }
     }
     fn window_event(
@@ -85,11 +75,11 @@ impl<A: GuiApp> ApplicationHandler for AppWrapper<A> {
 
             WindowEvent::RedrawRequested => {
                 if let Some(engine) = &mut self.engine
-                    && let Some(gui_app) = &mut self.gui_app
+                    && let Some(gui) = &mut self.gui
                 {
                     if engine.render {
-                        engine.render(gui_app).expect("could not render");
-                        engine.window.request_redraw();
+                        engine.render(gui).expect("could not render");
+                        engine.window().request_redraw();
                     } else {
                         std::thread::sleep(Duration::from_millis(100));
                     }
@@ -97,8 +87,10 @@ impl<A: GuiApp> ApplicationHandler for AppWrapper<A> {
             }
 
             event => {
-                if let Some(engine) = &mut self.engine {
-                    engine.window_event(&event);
+                if let Some(engine) = &mut self.engine
+                    && let Some(gui) = &mut self.gui
+                {
+                    engine.window_event(&event, gui);
                 }
             }
         }

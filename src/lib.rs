@@ -1,10 +1,11 @@
 pub mod app;
+mod compute;
 mod descriptors;
 mod engine;
 mod frames;
+mod graphics;
 mod gui;
 mod immediate;
-mod pipeline;
 mod shader;
 mod swapchain;
 mod texture;

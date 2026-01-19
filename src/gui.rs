@@ -7,20 +7,10 @@ use winit::window::Window;
 use crate::{
     engine::Engine,
     frames::FRAMES_IN_FLIGHT,
-    immediate::ImmediateSubmit,
     swapchain::Swapchain,
     utils::{color_attachment_info, rendering_info},
     vulkan::Vulkan,
 };
-pub trait GuiApp {
-    fn new(engine: &mut Engine) -> eyre::Result<Self>
-    where
-        Self: std::marker::Sized;
-    fn build_ui(&mut self, ctx: &egui::Context);
-    fn destroy(&mut self, engine: &mut Engine) {
-        let _ = engine;
-    }
-}
 pub struct Gui {
     ctx: egui::Context,
     winit: egui_winit::State,
@@ -80,27 +70,25 @@ impl Gui {
 
     pub fn generate_ui(
         &mut self,
-        egui_app: &mut impl GuiApp,
-        window: &Window,
-        vulkan: &Vulkan,
-        immediate: &ImmediateSubmit,
+        engine: &mut Engine,
     ) -> eyre::Result<(Vec<egui::ClippedPrimitive>, f32)> {
-        let raw_input = self.winit.take_egui_input(window);
+        let raw_input = self.winit.take_egui_input(engine.window());
         let egui::FullOutput {
             platform_output,
             textures_delta,
             shapes,
             pixels_per_point,
             ..
-        } = self.ctx.run(raw_input, |ctx| egui_app.build_ui(ctx));
-        self.winit.handle_platform_output(window, platform_output);
+        } = self.ctx.run(raw_input, |ctx| engine.build_ui(ctx));
+        self.winit
+            .handle_platform_output(engine.window(), platform_output);
         if !textures_delta.free.is_empty() {
             self.textures_to_free = Some(textures_delta.free);
         }
         if !textures_delta.set.is_empty() {
             self.renderer.set_textures(
-                vulkan.graphics_queue(),
-                immediate.pool(),
+                engine.vulkan().graphics_queue(),
+                engine.immediate_submit().pool(),
                 &textures_delta.set,
             )?;
         }
@@ -109,6 +97,7 @@ impl Gui {
             pixels_per_point,
         ))
     }
+
     pub fn draw_gui(
         &mut self,
         device: &ash::Device,
@@ -134,5 +123,9 @@ impl Gui {
 
     pub const fn renderer_mut(&mut self) -> &mut egui_ash_renderer::Renderer {
         &mut self.renderer
+    }
+
+    pub const fn winit_mut(&mut self) -> &mut egui_winit::State {
+        &mut self.winit
     }
 }

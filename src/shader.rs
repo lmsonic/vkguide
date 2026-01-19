@@ -31,7 +31,6 @@ impl ShaderCompiler {
     pub fn create_shader_module_from_str(
         &self,
         device: &ash::Device,
-
         source: &str,
         kind: shaderc::ShaderKind,
         file_name: &str,
