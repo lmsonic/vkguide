@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{utils::create_cmd_buffer_info, vulkan::QueueFamilyIndices};
+use crate::utils::create_cmd_buffer_info;
 
 pub struct ImmediateSubmit {
     pool: vk::CommandPool,
@@ -9,13 +9,10 @@ pub struct ImmediateSubmit {
 }
 
 impl ImmediateSubmit {
-    pub fn new(
-        device: &ash::Device,
-        queue_family_indices: &QueueFamilyIndices,
-    ) -> eyre::Result<Self> {
+    pub fn new(device: &ash::Device, queue_index: u32) -> eyre::Result<Self> {
         let pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(queue_family_indices.graphics);
+            .queue_family_index(queue_index);
         let pool = unsafe { device.create_command_pool(&pool_info, None) }?;
         let cmd_info = create_cmd_buffer_info().pool(pool).call();
         let cmd = unsafe { device.allocate_command_buffers(&cmd_info) }?[0];
@@ -26,7 +23,7 @@ impl ImmediateSubmit {
     pub fn submit(
         &self,
         device: &ash::Device,
-        graphics_queue: vk::Queue,
+        queue: vk::Queue,
         mut func: impl FnMut(vk::CommandBuffer),
     ) -> eyre::Result<()> {
         unsafe { device.reset_fences(&[self.fence]) }?;
@@ -42,7 +39,7 @@ impl ImmediateSubmit {
         let cmd_infos = [cmd_info];
 
         let submit_info = vk::SubmitInfo2::default().command_buffer_infos(&cmd_infos);
-        unsafe { device.queue_submit2(graphics_queue, &[submit_info], self.fence) }?;
+        unsafe { device.queue_submit2(queue, &[submit_info], self.fence) }?;
         unsafe { device.wait_for_fences(&[self.fence], true, u64::MAX) }?;
         Ok(())
     }

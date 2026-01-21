@@ -2,16 +2,17 @@ use std::{mem::ManuallyDrop, sync::Arc};
 
 use ash::vk;
 use egui::{DragValue, Ui, vec2};
-use glam::Vec4;
+use glam::{Affine3A, Mat4, Vec3, Vec4, vec3, vec4};
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 use crate::{
     compute::{ComputeEffect, create_compute_effects},
     descriptors::{DescriptorAllocator, PoolSizeRatio},
     frames::Frames,
-    graphics::TrianglePipeline,
-    gui::Gui,
+    graphics::{MeshPipeline, TrianglePipeline},
+    gui::{Gui, affine_ui, vec4_drag_value},
     immediate::ImmediateSubmit,
+    mesh::{GPUDrawPushConstants, GPUMeshBuffers, Vertex},
     shader::ShaderCompiler,
     swapchain::{self, Swapchain},
     texture::{DrawImage, copy_image_to_image},
@@ -29,10 +30,14 @@ pub struct Engine {
     shader_compiler: ShaderCompiler,
     descriptor_allocator: DescriptorAllocator,
     draw_image: DrawImage,
-    immediate_submit: ImmediateSubmit,
+    immediate_transfer: ImmediateSubmit,
+    immediate_graphics: ImmediateSubmit,
     background_effects: Vec<ComputeEffect>,
     current_background_effect: usize,
     triangle_pipeline: TrianglePipeline,
+    mesh_buffers: GPUMeshBuffers,
+    mesh_pipeline: MeshPipeline,
+    mesh_matrix: Affine3A,
 }
 
 impl Engine {
@@ -42,9 +47,12 @@ impl Engine {
 
         self.frames.destroy(device);
         //
+        self.mesh_buffers.destroy(&self.allocator);
+        self.mesh_pipeline.destroy(device);
         self.triangle_pipeline.destroy(device);
         unsafe { ManuallyDrop::drop(gui) };
-        self.immediate_submit.destroy(device);
+        self.immediate_graphics.destroy(device);
+        self.immediate_transfer.destroy(device);
         for e in &mut self.background_effects {
             e.destroy(device);
         }
@@ -95,9 +103,30 @@ impl Engine {
             &[PoolSizeRatio::new(vk::DescriptorType::STORAGE_IMAGE, 1.0)],
         )?;
         let draw_image = DrawImage::new(&window, device, &allocator, &descriptor_allocator)?;
-        let immediate_submit = ImmediateSubmit::new(device, vulkan.queue_family_indices())?;
+        let immediate_graphics =
+            ImmediateSubmit::new(device, vulkan.queue_family_indices().graphics)?;
+        let immediate_transfer =
+            ImmediateSubmit::new(device, vulkan.queue_family_indices().transfer)?;
         let background_effects = create_compute_effects(device, &draw_image, &shader_compiler)?;
         let triangle_pipeline = TrianglePipeline::new(device, &shader_compiler, &draw_image)?;
+
+        let vertices = [
+            Vertex::new(vec3(0.5, -0.5, 0.0), vec4(0.0, 0.0, 0.0, 1.0)),
+            Vertex::new(vec3(0.5, 0.5, 0.0), vec4(0.5, 0.5, 0.5, 1.0)),
+            Vertex::new(vec3(-0.5, -0.5, 0.0), vec4(1.0, 0.0, 0.0, 1.0)),
+            Vertex::new(vec3(-0.5, 0.5, 0.0), vec4(0.0, 1.0, 0.0, 1.0)),
+        ];
+        let indices = [0, 1, 2, 2, 1, 3];
+
+        let mesh_buffers = GPUMeshBuffers::new(
+            device,
+            &allocator,
+            vulkan.transfer_queue(),
+            &immediate_transfer,
+            &indices,
+            &vertices,
+        )?;
+        let mesh_pipeline = MeshPipeline::new(device, &shader_compiler, &draw_image)?;
         Ok(Self {
             window,
             render: true,
@@ -108,10 +137,14 @@ impl Engine {
             draw_image,
             shader_compiler,
             descriptor_allocator,
-            immediate_submit,
             background_effects,
             current_background_effect: 0,
             triangle_pipeline,
+            immediate_transfer,
+            immediate_graphics,
+            mesh_buffers,
+            mesh_pipeline,
+            mesh_matrix: Affine3A::IDENTITY,
         })
     }
     fn draw_extent_2d(&self) -> vk::Extent2D {
@@ -165,17 +198,6 @@ impl Engine {
     }
 
     pub(crate) fn build_ui(&mut self, ctx: &egui::Context) {
-        fn vec4_drag_value(ui: &mut Ui, v: &mut Vec4, label: &str) {
-            let result = v;
-            let size = vec2(48.0, 20.0);
-            ui.label(label);
-            ui.columns(4, |ui| {
-                ui[0].add_sized(size, DragValue::new(&mut result.x).speed(0.01));
-                ui[1].add_sized(size, DragValue::new(&mut result.y).speed(0.01));
-                ui[2].add_sized(size, DragValue::new(&mut result.z).speed(0.01));
-                ui[3].add_sized(size, DragValue::new(&mut result.w).speed(0.01));
-            });
-        }
         let background_effects_len = self.background_effects.len();
         let selected = &mut self.background_effects[self.current_background_effect];
         egui::Window::new("Background").show(ctx, |ui| {
@@ -189,6 +211,8 @@ impl Engine {
             vec4_drag_value(ui, &mut selected.data.data2, "data2");
             vec4_drag_value(ui, &mut selected.data.data3, "data3");
             vec4_drag_value(ui, &mut selected.data.data4, "data4");
+
+            affine_ui(ui, &mut self.mesh_matrix, "Mesh Matrix");
         });
     }
     fn draw_geometry(&self, cmd: vk::CommandBuffer) {
@@ -204,13 +228,13 @@ impl Engine {
             .call();
         unsafe { device.cmd_begin_rendering(cmd, &rendering_info) };
 
-        unsafe {
-            device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.triangle_pipeline.pipeline(),
-            );
-        };
+        // unsafe {
+        //     device.cmd_bind_pipeline(
+        //         cmd,
+        //         vk::PipelineBindPoint::GRAPHICS,
+        //         self.triangle_pipeline.pipeline(),
+        //     );
+        // };
         let viewport = vk::Viewport {
             x: 0.0,
             y: 0.0,
@@ -227,7 +251,38 @@ impl Engine {
         };
         unsafe { device.cmd_set_scissor(cmd, 0, &[scissor]) };
 
-        unsafe { device.cmd_draw(cmd, 3, 1, 0, 0) };
+        // unsafe { device.cmd_draw(cmd, 3, 1, 0, 0) };
+        unsafe {
+            device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.mesh_pipeline.pipeline(),
+            );
+        };
+        let matrix = Mat4::from(self.mesh_matrix);
+        let push_constants =
+            GPUDrawPushConstants::new(matrix, self.mesh_buffers.vertex_buffer_addr());
+
+        unsafe {
+            device.cmd_push_constants(
+                cmd,
+                self.mesh_pipeline.layout(),
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                bytemuck::bytes_of(&push_constants),
+            );
+        };
+
+        unsafe {
+            device.cmd_bind_index_buffer(
+                cmd,
+                self.mesh_buffers.index_buffer().buffer(),
+                0,
+                vk::IndexType::UINT32,
+            );
+        };
+
+        unsafe { device.cmd_draw_indexed(cmd, 6, 1, 0, 0, 0) };
 
         unsafe { device.cmd_end_rendering(cmd) };
     }
@@ -420,7 +475,7 @@ impl Engine {
         &self.swapchain
     }
 
-    pub const fn immediate_submit(&self) -> &ImmediateSubmit {
-        &self.immediate_submit
+    pub const fn immediate_graphics(&self) -> &ImmediateSubmit {
+        &self.immediate_graphics
     }
 }

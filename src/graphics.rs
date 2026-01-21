@@ -1,7 +1,74 @@
 use ash::vk::{self};
 use eyre::eyre;
 
-use crate::{shader::ShaderCompiler, texture::DrawImage};
+use crate::{mesh::GPUDrawPushConstants, shader::ShaderCompiler, texture::DrawImage};
+
+pub struct MeshPipeline {
+    pipeline: vk::Pipeline,
+    layout: vk::PipelineLayout,
+}
+
+impl MeshPipeline {
+    pub fn new(
+        device: &ash::Device,
+        shader_compiler: &ShaderCompiler,
+        draw_image: &DrawImage,
+    ) -> eyre::Result<Self> {
+        let vertex_src = include_str!("../shaders/colored_triangle_mesh.vert");
+        let vertex_shader = shader_compiler.create_shader_module_from_str(
+            device,
+            vertex_src,
+            shaderc::ShaderKind::Vertex,
+            "colored_triangle_mesh.vert",
+            "main",
+        )?;
+
+        let frag_src = include_str!("../shaders/colored_triangle.frag");
+        let frag_shader = shader_compiler.create_shader_module_from_str(
+            device,
+            frag_src,
+            shaderc::ShaderKind::Fragment,
+            "colored_triangle.frag",
+            "main",
+        )?;
+        let push_constant = vk::PushConstantRange::default()
+            .size(std::mem::size_of::<GPUDrawPushConstants>() as u32)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+        let push_constants = [push_constant];
+        let layout_info =
+            vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&push_constants);
+        let layout = unsafe { device.create_pipeline_layout(&layout_info, None) }?;
+
+        let pipeline = GraphicsPipelineInfo::builder()
+            .layout(layout)
+            .shaders([vertex_shader, frag_shader])
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .color_attachment_format(draw_image.format())
+            .depth_format(vk::Format::UNDEFINED)
+            .build()
+            .create(device)?;
+
+        unsafe { device.destroy_shader_module(vertex_shader, None) };
+        unsafe { device.destroy_shader_module(frag_shader, None) };
+        Ok(Self { pipeline, layout })
+    }
+    pub fn destroy(&mut self, device: &ash::Device) {
+        unsafe { device.destroy_pipeline_layout(self.layout, None) };
+        unsafe { device.destroy_pipeline(self.pipeline, None) };
+    }
+
+    pub const fn pipeline(&self) -> vk::Pipeline {
+        self.pipeline
+    }
+
+    pub const fn layout(&self) -> vk::PipelineLayout {
+        self.layout
+    }
+}
 
 pub struct TrianglePipeline {
     pipeline: vk::Pipeline,

@@ -1,7 +1,9 @@
-use std::sync::Arc;
+use std::{result, sync::Arc};
 
 use ash::vk;
+use egui::{DragValue, Ui, vec2};
 use eyre::Ok;
+use glam::{Affine3A, Quat, Vec3, Vec4};
 use winit::window::Window;
 
 use crate::{
@@ -16,6 +18,48 @@ pub struct Gui {
     winit: egui_winit::State,
     renderer: egui_ash_renderer::Renderer,
     textures_to_free: Option<Vec<egui::TextureId>>,
+}
+
+pub fn affine_ui(ui: &mut Ui, affine: &mut Affine3A, label: &str) {
+    const EULER_ROT: glam::EulerRot = glam::EulerRot::XYZ;
+    let (mut scale, rotation, mut translation) = affine.to_scale_rotation_translation();
+    let (euler_x, euler_y, euler_z) = rotation.to_euler(EULER_ROT);
+    let mut euler_deg = Vec3::new(
+        euler_x.to_degrees(),
+        euler_y.to_degrees(),
+        euler_z.to_degrees(),
+    );
+    ui.label(label);
+    vec3_drag_value(ui, &mut translation, "Translation");
+    vec3_drag_value(ui, &mut euler_deg, "Rotation (deg)");
+    vec3_drag_value(ui, &mut scale, "Scale");
+    let rotation = Quat::from_euler(
+        EULER_ROT,
+        euler_deg.x.to_radians(),
+        euler_deg.y.to_radians(),
+        euler_deg.z.to_radians(),
+    );
+    *affine = Affine3A::from_scale_rotation_translation(scale, rotation, translation);
+}
+
+pub fn vec4_drag_value(ui: &mut Ui, v: &mut Vec4, label: &str) {
+    const SIZE: egui::Vec2 = vec2(48.0, 20.0);
+    ui.label(label);
+    ui.columns(4, |ui| {
+        ui[0].add_sized(SIZE, DragValue::new(&mut v.x).speed(0.01));
+        ui[1].add_sized(SIZE, DragValue::new(&mut v.y).speed(0.01));
+        ui[2].add_sized(SIZE, DragValue::new(&mut v.z).speed(0.01));
+        ui[3].add_sized(SIZE, DragValue::new(&mut v.w).speed(0.01));
+    });
+}
+pub fn vec3_drag_value(ui: &mut Ui, v: &mut Vec3, label: &str) {
+    const SIZE: egui::Vec2 = vec2(48.0, 20.0);
+    ui.label(label);
+    ui.columns(3, |ui| {
+        ui[0].add_sized(SIZE, DragValue::new(&mut v.x).speed(0.01));
+        ui[1].add_sized(SIZE, DragValue::new(&mut v.y).speed(0.01));
+        ui[2].add_sized(SIZE, DragValue::new(&mut v.z).speed(0.01));
+    });
 }
 
 impl Gui {
@@ -88,7 +132,7 @@ impl Gui {
         if !textures_delta.set.is_empty() {
             self.renderer.set_textures(
                 engine.vulkan().graphics_queue(),
-                engine.immediate_submit().pool(),
+                engine.immediate_graphics().pool(),
                 &textures_delta.set,
             )?;
         }

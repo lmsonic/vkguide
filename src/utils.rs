@@ -1,5 +1,15 @@
 use ash::vk;
 
+/// # Safety
+///
+/// Memory needs to be allocated for bytes size
+//
+pub const unsafe fn memcopy<T>(buffer: &[T], memory: *mut u8) {
+    unsafe {
+        std::ptr::copy_nonoverlapping(buffer.as_ptr(), memory.cast(), buffer.len());
+    };
+}
+
 pub fn semaphore_submit_info<'a>(
     stage_mask: vk::PipelineStageFlags2,
     semaphore: vk::Semaphore,
