@@ -12,7 +12,7 @@ use crate::{
     graphics::{MeshPipeline, TrianglePipeline},
     gui::{Gui, affine_ui, vec4_drag_value},
     immediate::ImmediateSubmit,
-    mesh::{GPUDrawPushConstants, GPUMeshBuffers, Vertex},
+    mesh::{GPUDrawPushConstants, GPUMeshBuffers, Mesh, Vertex},
     shader::ShaderCompiler,
     swapchain::{self, Swapchain},
     texture::{DrawImage, copy_image_to_image},
@@ -38,6 +38,7 @@ pub struct Engine {
     mesh_buffers: GPUMeshBuffers,
     mesh_pipeline: MeshPipeline,
     mesh_matrix: Affine3A,
+    meshes: Vec<Mesh>,
 }
 
 impl Engine {
@@ -47,6 +48,9 @@ impl Engine {
 
         self.frames.destroy(device);
         //
+        for mesh in &mut self.meshes {
+            mesh.mesh_buffers().destroy(&self.allocator);
+        }
         self.mesh_buffers.destroy(&self.allocator);
         self.mesh_pipeline.destroy(device);
         self.triangle_pipeline.destroy(device);
@@ -127,6 +131,14 @@ impl Engine {
             &vertices,
         )?;
         let mesh_pipeline = MeshPipeline::new(device, &shader_compiler, &draw_image)?;
+
+        let meshes = Mesh::from_path(
+            "assets/basicmesh.glb",
+            device,
+            &allocator,
+            vulkan.transfer_queue(),
+            &immediate_transfer,
+        )?;
         Ok(Self {
             window,
             render: true,
@@ -145,6 +157,7 @@ impl Engine {
             mesh_buffers,
             mesh_pipeline,
             mesh_matrix: Affine3A::IDENTITY,
+            meshes,
         })
     }
     fn draw_extent_2d(&self) -> vk::Extent2D {

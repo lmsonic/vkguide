@@ -4,7 +4,7 @@ use std::{
     ffi::{self, CStr},
 };
 
-use ash::vk::{self};
+use ash::vk::{self, Bool32};
 use eyre::{Context, ContextCompat, OptionExt};
 use winit::{
     raw_window_handle::{DisplayHandle, HasDisplayHandle, HasWindowHandle},
@@ -203,7 +203,7 @@ fn select_physical_device(
                 ..Default::default()
             };
             unsafe { instance.get_physical_device_features2(*pd, &mut features2) };
-            let b_true = true.into();
+            let b_true: Bool32 = true.into();
             let has_features = features_13.dynamic_rendering == b_true
                 && features_13.synchronization2 == b_true
                 && features_12.buffer_device_address == b_true
