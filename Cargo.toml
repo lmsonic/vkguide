@@ -36,7 +36,11 @@ egui-winit = { version = "0.33.3", features = [
 bon = { version = "3.8.2", default-features = false }
 glam = { version = "0.30.10", features = ["bytemuck"] }
 bytemuck = { version = "1.24.0", features = ["derive"] }
-gltf = { version = "1.4.1", default-features = false, features = ["import", "names", "utils"] }
+gltf = { version = "1.4.1", default-features = false, features = [
+    "import",
+    "names",
+    "utils",
+] }
 [lints.rust]
 ambiguous_negative_literals = "warn"
 # missing_debug_implementations = "warn"
@@ -86,6 +90,7 @@ unused_result_ok = "warn"
 literal_string_with_formatting_args = "allow"
 
 # Define custom opt outs here
+items_after_statements = "allow"
 cargo_common_metadata = "allow"
 cast_precision_loss = "allow"
 cast_possible_truncation = "allow"

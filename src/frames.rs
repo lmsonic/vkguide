@@ -40,7 +40,7 @@ impl Frames {
         &self.frames[self.frame_index % FRAMES_IN_FLIGHT]
     }
     pub const fn advance(&mut self) {
-        self.frame_index = ((self.frame_index + 1) % FRAMES_IN_FLIGHT);
+        self.frame_index = (self.frame_index + 1) % FRAMES_IN_FLIGHT ;
     }
     pub fn destroy(&mut self, device: &ash::Device) {
         for f in &mut self.frames {

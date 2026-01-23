@@ -1,4 +1,4 @@
-use std::{result, sync::Arc};
+use std::sync::Arc;
 
 use ash::vk;
 use egui::{DragValue, Ui, vec2};

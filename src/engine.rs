@@ -468,7 +468,7 @@ impl Engine {
         Ok(())
     }
 
-    pub fn resize(&mut self, size: PhysicalSize<u32>) {}
+    pub const fn resize(&self, _size: PhysicalSize<u32>) {}
 
     pub fn window_event(&mut self, event: &WindowEvent, gui: &mut Gui) {
         let _ = gui.winit_mut().on_window_event(&self.window, event);

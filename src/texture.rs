@@ -79,10 +79,6 @@ pub fn image_view_create_info<'a>(
         )
 }
 
-pub struct DepthImage {
-    image: AllocatedImage,
-}
-
 pub struct DrawImage {
     image: AllocatedImage,
     descriptor_set: vk::DescriptorSet,
@@ -206,7 +202,7 @@ impl AllocatedImage {
     ) -> eyre::Result<Self> {
         let image_info = image_create_info(format, usage, extent);
 
-        let (image, allocation) = unsafe { allocator.create_image(&image_info, &alloc_info) }?;
+        let (image, allocation) = unsafe { allocator.create_image(&image_info, alloc_info) }?;
 
         let image_view_info = image_view_create_info(format, image, aspect_flags);
         let image_view = unsafe { device.create_image_view(&image_view_info, None) }?;

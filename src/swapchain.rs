@@ -160,7 +160,7 @@ impl Swapchain {
         self.extent
     }
 
-    pub fn format(&self) -> vk::Format {
+    pub const fn format(&self) -> vk::Format {
         self.format
     }
 }

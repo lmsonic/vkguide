@@ -49,7 +49,7 @@ impl ApplicationHandler for AppWrapper {
         self.gui = Some(gui);
         self.engine = Some(engine);
     }
-    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(mut engine) = self.engine.take()
             && let Some(mut gui) = self.gui.take()
         {
@@ -59,7 +59,7 @@ impl ApplicationHandler for AppWrapper {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        window_id: winit::window::WindowId,
+        _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
         match event {
