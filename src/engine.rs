@@ -1,22 +1,23 @@
 use std::{mem::ManuallyDrop, sync::Arc};
 
 use ash::vk;
-use egui::{DragValue, Ui, vec2};
-use glam::{Affine3A, Mat4, Vec3, Vec4, vec3, vec4};
+use glam::{Affine3A, Mat4, Vec3};
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 use crate::{
     compute::{ComputeEffect, create_compute_effects},
     descriptors::{DescriptorAllocator, PoolSizeRatio},
     frames::Frames,
-    graphics::{MeshPipeline, TrianglePipeline},
+    graphics::MeshPipeline,
     gui::{Gui, affine_ui, vec4_drag_value},
     immediate::ImmediateSubmit,
-    mesh::{GPUDrawPushConstants, GPUMeshBuffers, Mesh, Vertex},
+    mesh::{GPUDrawPushConstants, Mesh, load_gltf_from_path},
     shader::ShaderCompiler,
     swapchain::{self, Swapchain},
-    texture::{DrawImage, copy_image_to_image},
-    utils::{color_attachment_info, rendering_info, semaphore_submit_info, transition_image},
+    texture::{AllocatedImage, DrawImage, copy_image_to_image, create_depth_image},
+    utils::{
+        color_attachment_info, depth_attachment_info, semaphore_submit_info, transition_image,
+    },
     vulkan::Vulkan,
 };
 
@@ -30,12 +31,11 @@ pub struct Engine {
     shader_compiler: ShaderCompiler,
     descriptor_allocator: DescriptorAllocator,
     draw_image: DrawImage,
+    depth_image: AllocatedImage,
     immediate_transfer: ImmediateSubmit,
     immediate_graphics: ImmediateSubmit,
     background_effects: Vec<ComputeEffect>,
     current_background_effect: usize,
-    triangle_pipeline: TrianglePipeline,
-    mesh_buffers: GPUMeshBuffers,
     mesh_pipeline: MeshPipeline,
     mesh_matrix: Affine3A,
     meshes: Vec<Mesh>,
@@ -45,15 +45,13 @@ impl Engine {
     pub fn destroy(&mut self, gui: &mut ManuallyDrop<Gui>) {
         unsafe { self.vulkan.device().device_wait_idle() }.unwrap();
         let device = self.vulkan.device();
-
+        let allocator = &mut self.allocator;
         self.frames.destroy(device);
         //
         for mesh in &mut self.meshes {
-            mesh.mesh_buffers().destroy(&self.allocator);
+            mesh.mesh_buffers_mut().destroy(allocator);
         }
-        self.mesh_buffers.destroy(&self.allocator);
         self.mesh_pipeline.destroy(device);
-        self.triangle_pipeline.destroy(device);
         unsafe { ManuallyDrop::drop(gui) };
         self.immediate_graphics.destroy(device);
         self.immediate_transfer.destroy(device);
@@ -61,9 +59,10 @@ impl Engine {
             e.destroy(device);
         }
         self.descriptor_allocator.destroy_pool(device);
-        self.draw_image.destroy(device, &self.allocator);
+        self.depth_image.destroy(device, allocator);
+        self.draw_image.destroy(device, allocator);
 
-        unsafe { ManuallyDrop::drop(&mut self.allocator) };
+        unsafe { ManuallyDrop::drop(allocator) };
         //
 
         let swapchain_device = self.vulkan.swapchain_device();
@@ -107,32 +106,16 @@ impl Engine {
             &[PoolSizeRatio::new(vk::DescriptorType::STORAGE_IMAGE, 1.0)],
         )?;
         let draw_image = DrawImage::new(&window, device, &allocator, &descriptor_allocator)?;
+        let depth_image = create_depth_image(device, &allocator, &draw_image)?;
         let immediate_graphics =
             ImmediateSubmit::new(device, vulkan.queue_family_indices().graphics)?;
         let immediate_transfer =
             ImmediateSubmit::new(device, vulkan.queue_family_indices().transfer)?;
         let background_effects = create_compute_effects(device, &draw_image, &shader_compiler)?;
-        let triangle_pipeline = TrianglePipeline::new(device, &shader_compiler, &draw_image)?;
 
-        let vertices = [
-            Vertex::new(vec3(0.5, -0.5, 0.0), vec4(0.0, 0.0, 0.0, 1.0)),
-            Vertex::new(vec3(0.5, 0.5, 0.0), vec4(0.5, 0.5, 0.5, 1.0)),
-            Vertex::new(vec3(-0.5, -0.5, 0.0), vec4(1.0, 0.0, 0.0, 1.0)),
-            Vertex::new(vec3(-0.5, 0.5, 0.0), vec4(0.0, 1.0, 0.0, 1.0)),
-        ];
-        let indices = [0, 1, 2, 2, 1, 3];
+        let mesh_pipeline = MeshPipeline::new(device, &shader_compiler, &draw_image, &depth_image)?;
 
-        let mesh_buffers = GPUMeshBuffers::new(
-            device,
-            &allocator,
-            vulkan.transfer_queue(),
-            &immediate_transfer,
-            &indices,
-            &vertices,
-        )?;
-        let mesh_pipeline = MeshPipeline::new(device, &shader_compiler, &draw_image)?;
-
-        let meshes = Mesh::from_path(
+        let meshes = load_gltf_from_path(
             "assets/basicmesh.glb",
             device,
             &allocator,
@@ -147,16 +130,15 @@ impl Engine {
             frames,
             allocator: ManuallyDrop::new(allocator),
             draw_image,
+            depth_image,
             shader_compiler,
             descriptor_allocator,
             background_effects,
             current_background_effect: 0,
-            triangle_pipeline,
             immediate_transfer,
             immediate_graphics,
-            mesh_buffers,
             mesh_pipeline,
-            mesh_matrix: Affine3A::IDENTITY,
+            mesh_matrix: Affine3A::from_translation(Vec3::new(0.0, 0.0, -5.0)),
             meshes,
         })
     }
@@ -233,21 +215,29 @@ impl Engine {
         let color_attachment_info = color_attachment_info()
             .view(self.draw_image.image_view())
             .call();
-        let color_attachment_infos = [color_attachment_info];
-        let draw_extent = self.draw_extent_2d();
-        let rendering_info = rendering_info()
-            .color_attachments(&color_attachment_infos)
-            .render_extent(draw_extent)
+        let depth_attachment = depth_attachment_info()
+            .view(self.depth_image.image_view())
             .call();
+        let color_attachments = [color_attachment_info];
+        let draw_extent = self.draw_extent_2d();
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D::default(),
+                extent: draw_extent,
+            })
+            .color_attachments(&color_attachments)
+            .depth_attachment(&depth_attachment)
+            .layer_count(1);
         unsafe { device.cmd_begin_rendering(cmd, &rendering_info) };
 
-        // unsafe {
-        //     device.cmd_bind_pipeline(
-        //         cmd,
-        //         vk::PipelineBindPoint::GRAPHICS,
-        //         self.triangle_pipeline.pipeline(),
-        //     );
-        // };
+        unsafe {
+            device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.mesh_pipeline.pipeline(),
+            );
+        };
+
         let viewport = vk::Viewport {
             x: 0.0,
             y: 0.0,
@@ -264,17 +254,14 @@ impl Engine {
         };
         unsafe { device.cmd_set_scissor(cmd, 0, &[scissor]) };
 
-        // unsafe { device.cmd_draw(cmd, 3, 1, 0, 0) };
-        unsafe {
-            device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.mesh_pipeline.pipeline(),
-            );
-        };
-        let matrix = Mat4::from(self.mesh_matrix);
+        let aspect_ratio = draw_extent.width as f32 / draw_extent.height as f32;
+        let mut projection =
+            Mat4::perspective_rh(f32::to_radians(70.0), aspect_ratio, 10000.0, 0.1);
+        projection.y_axis.y *= -1.0;
+        let matrix = projection * self.mesh_matrix;
+        let susanne = &self.meshes[2];
         let push_constants =
-            GPUDrawPushConstants::new(matrix, self.mesh_buffers.vertex_buffer_addr());
+            GPUDrawPushConstants::new(matrix, susanne.mesh_buffers().vertex_buffer_addr());
 
         unsafe {
             device.cmd_push_constants(
@@ -289,13 +276,22 @@ impl Engine {
         unsafe {
             device.cmd_bind_index_buffer(
                 cmd,
-                self.mesh_buffers.index_buffer().buffer(),
+                susanne.mesh_buffers().index_buffer().buffer(),
                 0,
                 vk::IndexType::UINT32,
             );
         };
 
-        unsafe { device.cmd_draw_indexed(cmd, 6, 1, 0, 0, 0) };
+        unsafe {
+            device.cmd_draw_indexed(
+                cmd,
+                susanne.surfaces()[0].count(),
+                1,
+                susanne.surfaces()[0].start_index(),
+                0,
+                0,
+            );
+        };
 
         unsafe { device.cmd_end_rendering(cmd) };
     }
@@ -363,6 +359,13 @@ impl Engine {
             draw_image,
             vk::ImageLayout::GENERAL,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        );
+        transition_image(
+            device,
+            cmd,
+            self.depth_image.image(),
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
         );
 
         self.draw_geometry(cmd);

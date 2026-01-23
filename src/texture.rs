@@ -78,6 +78,11 @@ pub fn image_view_create_info<'a>(
                 .level_count(1),
         )
 }
+
+pub struct DepthImage {
+    image: AllocatedImage,
+}
+
 pub struct DrawImage {
     image: AllocatedImage,
     descriptor_set: vk::DescriptorSet,
@@ -92,6 +97,26 @@ impl std::ops::Deref for DrawImage {
     }
 }
 
+pub fn create_depth_image(
+    device: &ash::Device,
+    allocator: &vk_mem::Allocator,
+    draw_image: &DrawImage,
+) -> Result<AllocatedImage, eyre::Error> {
+    AllocatedImage::new(
+        device,
+        allocator,
+        vk::Format::D32_SFLOAT,
+        draw_image.extent(),
+        vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        vk::ImageAspectFlags::DEPTH,
+        &vk_mem::AllocationCreateInfo {
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+            required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            ..Default::default()
+        },
+    )
+}
+
 impl DrawImage {
     pub fn new(
         window: &Window,
@@ -99,7 +124,31 @@ impl DrawImage {
         allocator: &vk_mem::Allocator,
         descriptor_allocator: &DescriptorAllocator,
     ) -> eyre::Result<Self> {
-        let image = AllocatedImage::new(window, device, allocator)?;
+        let format = vk::Format::R16G16B16A16_SFLOAT;
+        let extent = vk::Extent3D {
+            width: window.inner_size().width,
+            height: window.inner_size().height,
+            depth: 1,
+        };
+        let usage = vk::ImageUsageFlags::TRANSFER_SRC
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::STORAGE
+            | vk::ImageUsageFlags::COLOR_ATTACHMENT;
+
+        let alloc_info = vk_mem::AllocationCreateInfo {
+            usage: vk_mem::MemoryUsage::AutoPreferDevice,
+            required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            ..Default::default()
+        };
+        let image = AllocatedImage::new(
+            device,
+            allocator,
+            format,
+            extent,
+            usage,
+            vk::ImageAspectFlags::COLOR,
+            &alloc_info,
+        )?;
         let descriptor_set_layout = DescriptorLayoutBuilder::new()
             .add_binding(0, vk::DescriptorType::STORAGE_IMAGE)
             .build(device, vk::ShaderStageFlags::COMPUTE)?;
@@ -147,32 +196,19 @@ pub struct AllocatedImage {
 }
 impl AllocatedImage {
     pub fn new(
-        window: &Window,
         device: &ash::Device,
         allocator: &vk_mem::Allocator,
+        format: vk::Format,
+        extent: vk::Extent3D,
+        usage: vk::ImageUsageFlags,
+        aspect_flags: vk::ImageAspectFlags,
+        alloc_info: &vk_mem::AllocationCreateInfo,
     ) -> eyre::Result<Self> {
-        let width = window.inner_size().width;
-        let height = window.inner_size().height;
-        let extent = vk::Extent3D {
-            width,
-            height,
-            depth: 1,
-        };
-        let format = vk::Format::R16G16B16A16_SFLOAT;
-        let usage = vk::ImageUsageFlags::TRANSFER_SRC
-            | vk::ImageUsageFlags::TRANSFER_DST
-            | vk::ImageUsageFlags::STORAGE
-            | vk::ImageUsageFlags::COLOR_ATTACHMENT;
         let image_info = image_create_info(format, usage, extent);
 
-        let alloc_info = vk_mem::AllocationCreateInfo {
-            usage: vk_mem::MemoryUsage::AutoPreferDevice,
-            required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            ..Default::default()
-        };
         let (image, allocation) = unsafe { allocator.create_image(&image_info, &alloc_info) }?;
 
-        let image_view_info = image_view_create_info(format, image, vk::ImageAspectFlags::COLOR);
+        let image_view_info = image_view_create_info(format, image, aspect_flags);
         let image_view = unsafe { device.create_image_view(&image_view_info, None) }?;
 
         Ok(Self {

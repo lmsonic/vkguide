@@ -1,7 +1,11 @@
 use ash::vk::{self};
 use eyre::eyre;
 
-use crate::{mesh::GPUDrawPushConstants, shader::ShaderCompiler, texture::DrawImage};
+use crate::{
+    mesh::GPUDrawPushConstants,
+    shader::ShaderCompiler,
+    texture::{AllocatedImage, DrawImage},
+};
 
 pub struct MeshPipeline {
     pipeline: vk::Pipeline,
@@ -13,6 +17,7 @@ impl MeshPipeline {
         device: &ash::Device,
         shader_compiler: &ShaderCompiler,
         draw_image: &DrawImage,
+        depth_image: &AllocatedImage,
     ) -> eyre::Result<Self> {
         let vertex_src = include_str!("../shaders/colored_triangle_mesh.vert");
         let vertex_shader = shader_compiler.create_shader_module_from_str(
@@ -48,68 +53,8 @@ impl MeshPipeline {
             .cull_mode(vk::CullModeFlags::NONE)
             .front_face(vk::FrontFace::CLOCKWISE)
             .color_attachment_format(draw_image.format())
-            .depth_format(vk::Format::UNDEFINED)
-            .build()
-            .create(device)?;
-
-        unsafe { device.destroy_shader_module(vertex_shader, None) };
-        unsafe { device.destroy_shader_module(frag_shader, None) };
-        Ok(Self { pipeline, layout })
-    }
-    pub fn destroy(&mut self, device: &ash::Device) {
-        unsafe { device.destroy_pipeline_layout(self.layout, None) };
-        unsafe { device.destroy_pipeline(self.pipeline, None) };
-    }
-
-    pub const fn pipeline(&self) -> vk::Pipeline {
-        self.pipeline
-    }
-
-    pub const fn layout(&self) -> vk::PipelineLayout {
-        self.layout
-    }
-}
-
-pub struct TrianglePipeline {
-    pipeline: vk::Pipeline,
-    layout: vk::PipelineLayout,
-}
-
-impl TrianglePipeline {
-    pub fn new(
-        device: &ash::Device,
-        shader_compiler: &ShaderCompiler,
-        draw_image: &DrawImage,
-    ) -> eyre::Result<Self> {
-        let vertex_src = include_str!("../shaders/colored_triangle.vert");
-        let vertex_shader = shader_compiler.create_shader_module_from_str(
-            device,
-            vertex_src,
-            shaderc::ShaderKind::Vertex,
-            "colored_triangle.vert",
-            "main",
-        )?;
-
-        let frag_src = include_str!("../shaders/colored_triangle.frag");
-        let frag_shader = shader_compiler.create_shader_module_from_str(
-            device,
-            frag_src,
-            shaderc::ShaderKind::Fragment,
-            "colored_triangle.frag",
-            "main",
-        )?;
-        let layout_info = vk::PipelineLayoutCreateInfo::default();
-        let layout = unsafe { device.create_pipeline_layout(&layout_info, None) }?;
-
-        let pipeline = GraphicsPipelineInfo::builder()
-            .layout(layout)
-            .shaders([vertex_shader, frag_shader])
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::CLOCKWISE)
-            .color_attachment_format(draw_image.format())
-            .depth_format(vk::Format::UNDEFINED)
+            .depth_format(depth_image.format())
+            .depth_enabled(true)
             .build()
             .create(device)?;
 
@@ -141,6 +86,9 @@ pub struct GraphicsPipelineInfo {
     color_attachment_format: vk::Format,
     depth_format: vk::Format,
     layout: vk::PipelineLayout,
+    depth_enabled: bool,
+    depth_write_enabled: Option<bool>,
+    depth_compare_op: Option<vk::CompareOp>,
 }
 
 impl GraphicsPipelineInfo {
@@ -189,7 +137,15 @@ impl GraphicsPipelineInfo {
         let input_assembly = self.input_assembly();
         let rasterizer = self.rasterizer();
         let multisampling = disable_multisampling();
-        let depth_stencil_state = disable_depth_test();
+        let depth_stencil_state = if self.depth_enabled {
+            enable_depth_test(
+                self.depth_write_enabled.unwrap_or(true),
+                self.depth_compare_op
+                    .unwrap_or(vk::CompareOp::GREATER_OR_EQUAL),
+            )
+        } else {
+            disable_depth_test()
+        };
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic_state =
@@ -238,6 +194,19 @@ fn disable_depth_test<'a>() -> vk::PipelineDepthStencilStateCreateInfo<'a> {
         .depth_test_enable(false)
         .depth_write_enable(false)
         .depth_compare_op(vk::CompareOp::NEVER)
+        .depth_bounds_test_enable(false)
+        .min_depth_bounds(0.0)
+        .max_depth_bounds(1.0)
+}
+
+fn enable_depth_test<'a>(
+    depth_write_enabled: bool,
+    compare_op: vk::CompareOp,
+) -> vk::PipelineDepthStencilStateCreateInfo<'a> {
+    vk::PipelineDepthStencilStateCreateInfo::default()
+        .depth_test_enable(true)
+        .depth_write_enable(depth_write_enabled)
+        .depth_compare_op(compare_op)
         .depth_bounds_test_enable(false)
         .min_depth_bounds(0.0)
         .max_depth_bounds(1.0)

@@ -7,10 +7,7 @@ use glam::{Affine3A, Quat, Vec3, Vec4};
 use winit::window::Window;
 
 use crate::{
-    engine::Engine,
-    frames::FRAMES_IN_FLIGHT,
-    swapchain::Swapchain,
-    utils::{color_attachment_info, rendering_info},
+    engine::Engine, frames::FRAMES_IN_FLIGHT, swapchain::Swapchain, utils::color_attachment_info,
     vulkan::Vulkan,
 };
 pub struct Gui {
@@ -153,10 +150,13 @@ impl Gui {
     ) -> eyre::Result<()> {
         let color_attachment = color_attachment_info().view(target_image_view).call();
         let color_attachments = [color_attachment];
-        let rendering_info = rendering_info()
-            .render_extent(swapchain_extent)
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D::default(),
+                extent: swapchain_extent,
+            })
             .color_attachments(&color_attachments)
-            .call();
+            .layer_count(1);
         unsafe { device.cmd_begin_rendering(cmd, &rendering_info) };
 
         self.renderer

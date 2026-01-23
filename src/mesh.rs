@@ -11,107 +11,124 @@ pub struct GeoSurface {
     start_index: u32,
     count: u32,
 }
+
+impl GeoSurface {
+    pub const fn start_index(&self) -> u32 {
+        self.start_index
+    }
+
+    pub const fn count(&self) -> u32 {
+        self.count
+    }
+}
 pub struct Mesh {
     name: String,
     surfaces: Vec<GeoSurface>,
     mesh_buffers: GPUMeshBuffers,
 }
 
-impl Mesh {
-    pub fn from_path(
-        path: impl AsRef<Path>,
-        device: &ash::Device,
-        allocator: &vk_mem::Allocator,
-        transfer_queue: vk::Queue,
-        transfer_immediate: &ImmediateSubmit,
-    ) -> eyre::Result<Vec<Self>> {
-        let (gltf, buffers, _) = gltf::import(path).wrap_err("could not open")?;
-        let mut meshes: Vec<Self> = Vec::with_capacity(gltf.meshes().len());
-        let mut indices: Vec<u32> = vec![];
-        let mut vertices: Vec<Vertex> = vec![];
+pub fn load_gltf_from_path(
+    path: impl AsRef<Path>,
+    device: &ash::Device,
+    allocator: &vk_mem::Allocator,
+    transfer_queue: vk::Queue,
+    transfer_immediate: &ImmediateSubmit,
+) -> eyre::Result<Vec<Mesh>> {
+    let (gltf, buffers, _) = gltf::import(path).wrap_err("could not open")?;
+    let mut meshes = Vec::with_capacity(gltf.meshes().len());
+    let mut indices = vec![];
+    let mut vertices = vec![];
 
-        for mesh in gltf.meshes() {
-            let name = mesh.name().map_or_else(
-                || format!("Mesh #{}", mesh.index()),
-                std::string::ToString::to_string,
-            );
-            println!("loading mesh {name}");
-            indices.clear();
-            vertices.clear();
-            let mut surfaces = Vec::with_capacity(mesh.primitives().len());
-            for prim in mesh.primitives() {
-                println!("loading primitive #{}", prim.index());
-                let reader = prim.reader(|buffer| Some(&buffers[buffer.index()]));
-                let prim_indices = reader.read_indices().ok_or_eyre("could not read indices")?;
+    for mesh in gltf.meshes() {
+        let name = mesh.name().map_or_else(
+            || format!("Mesh #{}", mesh.index()),
+            std::string::ToString::to_string,
+        );
+        println!("loading mesh {name}");
+        indices.clear();
+        vertices.clear();
+        let mut surfaces = Vec::with_capacity(mesh.primitives().len());
+        for prim in mesh.primitives() {
+            println!("loading primitive #{}", prim.index());
+            let reader = prim.reader(|buffer| Some(&buffers[buffer.index()]));
+            let prim_indices = reader.read_indices().ok_or_eyre("could not read indices")?;
 
-                let prim_indices = prim_indices.into_u32();
+            let prim_indices = prim_indices.into_u32();
 
-                let geo_surface = GeoSurface {
-                    start_index: indices.len() as u32,
-                    count: prim_indices.len() as u32,
-                };
-                surfaces.push(geo_surface);
+            let geo_surface = GeoSurface {
+                start_index: indices.len() as u32,
+                count: prim_indices.len() as u32,
+            };
+            surfaces.push(geo_surface);
 
-                let initial_vert = vertices.len();
+            let initial_vert = vertices.len();
 
-                // load indices
-                indices.reserve(prim_indices.len());
-                for i in prim_indices {
-                    indices.push(initial_vert as u32 + i);
-                }
+            // load indices
+            indices.reserve(prim_indices.len());
+            for i in prim_indices {
+                indices.push(initial_vert as u32 + i);
+            }
 
-                // load positions
-                let positions = reader
-                    .read_positions()
-                    .ok_or_eyre("could not read positions")?;
-                vertices.resize(positions.len(), Vertex::default());
-                for (i, p) in positions.enumerate() {
-                    vertices[initial_vert + i].pos = Vec3::new(p[0], p[1], p[2]);
-                }
-                if let Some(normals) = reader.read_normals() {
-                    for (i, n) in normals.enumerate() {
-                        vertices[initial_vert + i].normal = Vec3::new(n[0], n[1], n[2]);
-                    }
-                }
-                if let Some(uvs) = reader.read_tex_coords(0) {
-                    for (i, uv) in uvs.into_f32().enumerate() {
-                        vertices[initial_vert + i].uv_x = uv[0];
-                        vertices[initial_vert + i].uv_y = uv[1];
-                    }
-                }
-
-                if let Some(colors) = reader.read_colors(0) {
-                    for (i, c) in colors.into_rgba_f32().enumerate() {
-                        vertices[initial_vert + i].color = Vec4::new(c[0], c[1], c[2], c[3]);
-                    }
+            // load positions
+            let positions = reader
+                .read_positions()
+                .ok_or_eyre("could not read positions")?;
+            vertices.resize(positions.len(), Vertex::default());
+            for (i, p) in positions.enumerate() {
+                vertices[initial_vert + i].pos = Vec3::new(p[0], p[1], p[2]);
+            }
+            if let Some(normals) = reader.read_normals() {
+                for (i, n) in normals.enumerate() {
+                    vertices[initial_vert + i].normal = Vec3::new(n[0], n[1], n[2]);
                 }
             }
-            const OVERRIDE_COLOR: bool = true;
-            if OVERRIDE_COLOR {
-                for v in &mut vertices {
-                    v.color = v.normal.extend(1.0);
+            if let Some(uvs) = reader.read_tex_coords(0) {
+                for (i, uv) in uvs.into_f32().enumerate() {
+                    vertices[initial_vert + i].uv_x = uv[0];
+                    vertices[initial_vert + i].uv_y = uv[1];
                 }
             }
-            let mesh_buffers = GPUMeshBuffers::new(
-                device,
-                allocator,
-                transfer_queue,
-                transfer_immediate,
-                &indices,
-                &vertices,
-            )?;
-            meshes.push(Self {
-                name,
-                surfaces,
-                mesh_buffers,
-            });
+
+            if let Some(colors) = reader.read_colors(0) {
+                for (i, c) in colors.into_rgba_f32().enumerate() {
+                    vertices[initial_vert + i].color = Vec4::new(c[0], c[1], c[2], c[3]);
+                }
+            }
         }
-
-        Ok(meshes)
+        const OVERRIDE_COLOR: bool = true;
+        if OVERRIDE_COLOR {
+            for v in &mut vertices {
+                v.color = v.normal.extend(1.0);
+            }
+        }
+        let mesh_buffers = GPUMeshBuffers::new(
+            device,
+            allocator,
+            transfer_queue,
+            transfer_immediate,
+            &indices,
+            &vertices,
+        )?;
+        meshes.push(Mesh {
+            name,
+            surfaces,
+            mesh_buffers,
+        });
     }
 
-    pub const fn mesh_buffers(&mut self) -> &mut GPUMeshBuffers {
+    Ok(meshes)
+}
+
+impl Mesh {
+    pub const fn mesh_buffers_mut(&mut self) -> &mut GPUMeshBuffers {
         &mut self.mesh_buffers
+    }
+    pub const fn mesh_buffers(&self) -> &GPUMeshBuffers {
+        &self.mesh_buffers
+    }
+
+    pub fn surfaces(&self) -> &[GeoSurface] {
+        &self.surfaces
     }
 }
 

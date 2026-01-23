@@ -99,24 +99,20 @@ pub fn color_attachment_info<'a>(
     }
     info
 }
-
 #[bon::builder]
-pub fn rendering_info<'a>(
-    render_extent: vk::Extent2D,
-    color_attachments: &'a [vk::RenderingAttachmentInfo<'a>],
-    depth_attachment: Option<vk::RenderingAttachmentInfo<'a>>,
-) -> vk::RenderingInfo<'a> {
-    let mut info = vk::RenderingInfo::default()
-        .render_area(vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: render_extent,
+pub fn depth_attachment_info<'a>(
+    view: vk::ImageView,
+    layout: Option<vk::ImageLayout>,
+) -> ash::vk::RenderingAttachmentInfo<'a> {
+    vk::RenderingAttachmentInfo::default()
+        .image_view(view)
+        .image_layout(layout.unwrap_or(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL))
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .clear_value(vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue {
+                depth: 0.0,
+                stencil: 0,
+            },
         })
-        .layer_count(1)
-        .color_attachments(color_attachments);
-
-    if let Some(depth) = depth_attachment {
-        info.p_depth_attachment = &raw const depth;
-    }
-
-    info
 }
