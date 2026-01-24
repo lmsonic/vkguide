@@ -1,6 +1,7 @@
 use std::{mem::ManuallyDrop, sync::Arc};
 
-use ash::vk;
+use ash::vk::{self};
+use eyre::eyre;
 use glam::{Affine3A, Mat4, Vec3};
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
@@ -27,10 +28,12 @@ pub struct Engine {
     vulkan: Vulkan,
     allocator: ManuallyDrop<vk_mem::Allocator>,
     swapchain: Swapchain,
+    render_semaphores: Vec<vk::Semaphore>,
     frames: Frames,
     shader_compiler: ShaderCompiler,
     descriptor_allocator: DescriptorAllocator,
     draw_image: DrawImage,
+    render_scale: f32,
     depth_image: AllocatedImage,
     immediate_transfer: ImmediateSubmit,
     immediate_graphics: ImmediateSubmit,
@@ -39,6 +42,7 @@ pub struct Engine {
     mesh_pipeline: MeshPipeline,
     mesh_matrix: Affine3A,
     meshes: Vec<Mesh>,
+    resize_swapchain: bool,
 }
 
 impl Engine {
@@ -67,7 +71,9 @@ impl Engine {
 
         let swapchain_device = self.vulkan.swapchain_device();
         self.swapchain.destroy(device, &swapchain_device);
-
+        for s in &self.render_semaphores {
+            unsafe { device.destroy_semaphore(*s, None) };
+        }
         unsafe { device.destroy_device(None) };
 
         let surface_instance = self.vulkan.surface_instance();
@@ -83,17 +89,21 @@ impl Engine {
     }
     pub fn new(window: Arc<Window>) -> eyre::Result<Self> {
         let vulkan = Vulkan::new(&window)?;
+        let PhysicalSize { width, height } = window.inner_size();
+
         let swapchain = Swapchain::new(
-            &window,
+            width,
+            height,
             &vulkan,
             swapchain::IMAGE_FORMAT,
             swapchain::COLOR_SPACE,
             vk::PresentModeKHR::FIFO,
             vk::ImageUsageFlags::TRANSFER_DST,
         )?;
+        let device = vulkan.device();
+        let render_semaphores = swapchain.create_render_semaphores(device)?;
         let frames = Frames::new(&vulkan)?;
 
-        let device = vulkan.device();
         let mut allocator_info =
             vk_mem::AllocatorCreateInfo::new(vulkan.instance(), device, vulkan.physical_device());
         allocator_info.flags = vk_mem::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
@@ -105,7 +115,15 @@ impl Engine {
             10,
             &[PoolSizeRatio::new(vk::DescriptorType::STORAGE_IMAGE, 1.0)],
         )?;
-        let draw_image = DrawImage::new(&window, device, &allocator, &descriptor_allocator)?;
+        const MONITOR_WIDTH: u32 = 1980;
+        const MONITOR_HEIGHT: u32 = 1080;
+        let draw_image = DrawImage::new(
+            MONITOR_WIDTH,
+            MONITOR_HEIGHT,
+            device,
+            &allocator,
+            &descriptor_allocator,
+        )?;
         let depth_image = create_depth_image(device, &allocator, &draw_image)?;
         let immediate_graphics =
             ImmediateSubmit::new(device, vulkan.queue_family_indices().graphics)?;
@@ -127,6 +145,8 @@ impl Engine {
             render: true,
             vulkan,
             swapchain,
+            render_semaphores,
+
             frames,
             allocator: ManuallyDrop::new(allocator),
             draw_image,
@@ -140,12 +160,18 @@ impl Engine {
             mesh_pipeline,
             mesh_matrix: Affine3A::from_translation(Vec3::new(0.0, 0.0, -5.0)),
             meshes,
+            render_scale: 1.0,
+            resize_swapchain: false,
         })
     }
-    fn draw_extent_2d(&self) -> vk::Extent2D {
+    fn draw_extent(&self) -> vk::Extent2D {
+        let draw_extent = self.draw_image.extent();
+        let swapchain_extent = self.swapchain.extent();
+        let width = draw_extent.width.min(swapchain_extent.width) as f32 * self.render_scale;
+        let height = draw_extent.height.min(swapchain_extent.height) as f32 * self.render_scale;
         vk::Extent2D {
-            width: self.draw_image.extent().width,
-            height: self.draw_image.extent().height,
+            width: width.round() as u32,
+            height: height.round() as u32,
         }
     }
 
@@ -181,7 +207,7 @@ impl Engine {
                 push_constants_bytes,
             );
         };
-        let draw_extent = self.draw_extent_2d();
+        let draw_extent = self.draw_extent();
         unsafe {
             device.cmd_dispatch(
                 cmd,
@@ -208,6 +234,7 @@ impl Engine {
             vec4_drag_value(ui, &mut selected.data.data4, "data4");
 
             affine_ui(ui, &mut self.mesh_matrix, "Mesh Matrix");
+            ui.add(egui::Slider::new(&mut self.render_scale, 0.3..=1.0))
         });
     }
     fn draw_geometry(&self, cmd: vk::CommandBuffer) {
@@ -219,7 +246,7 @@ impl Engine {
             .view(self.depth_image.image_view())
             .call();
         let color_attachments = [color_attachment_info];
-        let draw_extent = self.draw_extent_2d();
+        let draw_extent = self.draw_extent();
         let rendering_info = vk::RenderingInfo::default()
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D::default(),
@@ -295,7 +322,29 @@ impl Engine {
 
         unsafe { device.cmd_end_rendering(cmd) };
     }
+
+    fn resize_swapchain(&mut self) -> eyre::Result<()> {
+        self.swapchain
+            .destroy(self.vulkan.device(), &self.vulkan.swapchain_device());
+
+        let PhysicalSize { width, height } = self.window.inner_size();
+
+        self.swapchain = Swapchain::new(
+            width,
+            height,
+            &self.vulkan,
+            swapchain::IMAGE_FORMAT,
+            swapchain::COLOR_SPACE,
+            vk::PresentModeKHR::FIFO,
+            vk::ImageUsageFlags::TRANSFER_DST,
+        )?;
+        self.resize_swapchain = false;
+        Ok(())
+    }
     pub fn render(&mut self, gui: &mut Gui) -> eyre::Result<()> {
+        if self.resize_swapchain {
+            self.resize_swapchain()?;
+        }
         let device = self.vulkan.device();
         unsafe {
             device.wait_for_fences(
@@ -310,14 +359,26 @@ impl Engine {
         let (primitives, pixels_per_point) = gui.generate_ui(self)?;
 
         let swapchain_device = self.vulkan.swapchain_device();
-        let (image_index, _) = unsafe {
+
+        let image_index = match unsafe {
             swapchain_device.acquire_next_image(
                 self.swapchain.swapchain(),
                 u64::MAX,
                 self.frames.get_current_frame().swapchain_semaphore(),
                 vk::Fence::null(),
             )
-        }?;
+        } {
+            Err(e) if e == vk::Result::ERROR_OUT_OF_DATE_KHR => {
+                self.resize_swapchain = true;
+                return Ok(());
+            }
+            Ok((_, true)) => {
+                self.resize_swapchain = true;
+                return Ok(());
+            }
+            Ok((i, _)) => i,
+            Err(e) => return Err(eyre!("{e}")),
+        };
 
         let cmd = self.frames.get_current_frame().cmd_buffer();
         self.record_commands(gui, &primitives, pixels_per_point, image_index, cmd)?;
@@ -384,7 +445,7 @@ impl Engine {
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         );
-        let draw_extent = self.draw_extent_2d();
+        let draw_extent = self.draw_extent();
         copy_image_to_image(
             device,
             cmd,
@@ -430,7 +491,7 @@ impl Engine {
         let cmd_info = vk::CommandBufferSubmitInfo::default()
             .command_buffer(cmd)
             .device_mask(0);
-        let render_semaphore = self.swapchain.render_semaphores()[image_index as usize];
+        let render_semaphore = self.render_semaphores[image_index as usize];
         let wait_info = semaphore_submit_info(
             vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             current_frame.swapchain_semaphore(),
@@ -464,11 +525,25 @@ impl Engine {
             .swapchains(&swapchains)
             .wait_semaphores(&wait_semaphores)
             .image_indices(&image_indices);
-        unsafe { swapchain_device.queue_present(self.vulkan.present_queue(), &present_info) }?;
+        match unsafe { swapchain_device.queue_present(self.vulkan.present_queue(), &present_info) }
+        {
+            Err(e) if e == vk::Result::ERROR_OUT_OF_DATE_KHR => {
+                self.resize_swapchain = true;
+                return Ok(());
+            }
+            Ok(true) => {
+                self.resize_swapchain = true;
+                return Ok(());
+            }
+            Ok(_) => (),
+            Err(e) => return Err(eyre!("{e}")),
+        }
         Ok(())
     }
 
-    pub const fn resize(&self, _size: PhysicalSize<u32>) {}
+    pub const fn resize(&mut self, _size: PhysicalSize<u32>) {
+        self.resize_swapchain = true;
+    }
 
     pub fn window_event(&mut self, event: &WindowEvent, gui: &mut Gui) {
         let _ = gui.winit_mut().on_window_event(&self.window, event);

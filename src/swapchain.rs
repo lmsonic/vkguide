@@ -1,6 +1,5 @@
 use ash::vk;
 use eyre::Context;
-use winit::window::Window;
 
 use crate::vulkan::Vulkan;
 
@@ -11,14 +10,14 @@ pub struct Swapchain {
     swapchain: vk::SwapchainKHR,
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
-    render_semaphores: Vec<vk::Semaphore>,
     extent: vk::Extent2D,
     format: vk::Format,
 }
 
 impl Swapchain {
     pub fn new(
-        window: &Window,
+        width: u32,
+        height: u32,
         vulkan: &Vulkan,
         format: vk::Format,
         color_space: vk::ColorSpaceKHR,
@@ -47,8 +46,6 @@ impl Swapchain {
             image_count = surface_caps.max_image_count;
         }
 
-        let width = window.inner_size().width;
-        let height = window.inner_size().height;
         let extent = if surface_caps.current_extent.width == u32::MAX {
             vk::Extent2D { width, height }
         } else {
@@ -112,20 +109,28 @@ impl Swapchain {
                 unsafe { device.create_image_view(&info, None).ok() }
             })
             .collect();
-        let semaphore_info = vk::SemaphoreCreateInfo::default();
-        let mut render_semaphores = Vec::with_capacity(images.len());
-        for _ in 0..images.len() {
-            render_semaphores.push(unsafe { device.create_semaphore(&semaphore_info, None) }?);
-        }
+
         Ok(Self {
             swapchain,
             images,
             image_views,
-            render_semaphores,
             extent,
-            format: image_format,
+            format,
         })
     }
+
+    pub fn create_render_semaphores(
+        &self,
+        device: &ash::Device,
+    ) -> eyre::Result<Vec<vk::Semaphore>> {
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        let mut render_semaphores = Vec::with_capacity(self.images.len());
+        for _ in 0..self.images.len() {
+            render_semaphores.push(unsafe { device.create_semaphore(&semaphore_info, None) }?);
+        }
+        Ok(render_semaphores)
+    }
+
     pub fn destroy(
         &mut self,
         device: &ash::Device,
@@ -134,9 +139,6 @@ impl Swapchain {
         unsafe { swapchain_device.destroy_swapchain(self.swapchain, None) };
         for v in &self.image_views {
             unsafe { device.destroy_image_view(*v, None) };
-        }
-        for s in &self.render_semaphores {
-            unsafe { device.destroy_semaphore(*s, None) };
         }
     }
 
@@ -150,10 +152,6 @@ impl Swapchain {
 
     pub fn image_views(&self) -> &[vk::ImageView] {
         &self.image_views
-    }
-
-    pub fn render_semaphores(&self) -> &[vk::Semaphore] {
-        &self.render_semaphores
     }
 
     pub const fn extent(&self) -> vk::Extent2D {

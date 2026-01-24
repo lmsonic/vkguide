@@ -55,6 +55,7 @@ impl MeshPipeline {
             .color_attachment_format(draw_image.format())
             .depth_format(depth_image.format())
             .depth_enabled(true)
+            .blending(Blending::Alpha)
             .build()
             .create(device)?;
 
@@ -76,6 +77,12 @@ impl MeshPipeline {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum Blending {
+    Additive,
+    Alpha,
+}
+
 #[derive(bon::Builder)]
 pub struct GraphicsPipelineInfo {
     shaders: [vk::ShaderModule; 2],
@@ -89,6 +96,7 @@ pub struct GraphicsPipelineInfo {
     depth_enabled: bool,
     depth_write_enabled: Option<bool>,
     depth_compare_op: Option<vk::CompareOp>,
+    blending: Option<Blending>,
 }
 
 impl GraphicsPipelineInfo {
@@ -121,7 +129,13 @@ impl GraphicsPipelineInfo {
             .scissor_count(1)
             .viewport_count(1);
 
-        let attachments = [disable_blending()];
+        let color_attachment =
+            self.blending
+                .map_or_else(disable_blending, |blending| match blending {
+                    Blending::Additive => additive_blending(),
+                    Blending::Alpha => alpha_blending(),
+                });
+        let attachments = [color_attachment];
         let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
             .logic_op(vk::LogicOp::COPY)
@@ -187,6 +201,31 @@ fn disable_blending() -> vk::PipelineColorBlendAttachmentState {
     vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(false)
+}
+
+fn additive_blending() -> vk::PipelineColorBlendAttachmentState {
+    // src.rgb * src.a + dst.rgc * 1.0
+    vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD)
+}
+fn alpha_blending() -> vk::PipelineColorBlendAttachmentState {
+    // src.rgb * src.a + dst.rgb * (1.0 - dst.a)
+    vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_DST_ALPHA)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD)
 }
 
 fn disable_depth_test<'a>() -> vk::PipelineDepthStencilStateCreateInfo<'a> {

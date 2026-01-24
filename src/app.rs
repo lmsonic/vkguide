@@ -37,7 +37,8 @@ impl ApplicationHandler for AppWrapper {
             .create_window(
                 Window::default_attributes()
                     .with_title("Vulkan Engine")
-                    .with_inner_size(LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT)),
+                    .with_inner_size(LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+                    .with_resizable(true),
             )
             .expect("could not create window");
         window.request_redraw();

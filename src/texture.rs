@@ -1,4 +1,6 @@
-use ash::vk;
+use ash::vk::{
+    self, native::StdVideoH264WeightedBipredIdc_STD_VIDEO_H264_WEIGHTED_BIPRED_IDC_DEFAULT,
+};
 use vk_mem::Alloc;
 use winit::window::Window;
 
@@ -115,15 +117,16 @@ pub fn create_depth_image(
 
 impl DrawImage {
     pub fn new(
-        window: &Window,
+        width: u32,
+        height: u32,
         device: &ash::Device,
         allocator: &vk_mem::Allocator,
         descriptor_allocator: &DescriptorAllocator,
     ) -> eyre::Result<Self> {
         let format = vk::Format::R16G16B16A16_SFLOAT;
         let extent = vk::Extent3D {
-            width: window.inner_size().width,
-            height: window.inner_size().height,
+            width,
+            height,
             depth: 1,
         };
         let usage = vk::ImageUsageFlags::TRANSFER_SRC
