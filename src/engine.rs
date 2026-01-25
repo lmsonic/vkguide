@@ -2,22 +2,28 @@ use std::{mem::ManuallyDrop, sync::Arc};
 
 use ash::vk::{self};
 use eyre::eyre;
-use glam::{Affine3A, Mat4, Vec3};
+use glam::{Affine3A, Mat4, Vec3, Vec4};
+use vk_mem::Alloc;
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 use crate::{
+    buffer::AllocatedBuffer,
     compute::{ComputeEffect, create_compute_effects},
-    descriptors::{DescriptorAllocator, PoolSizeRatio},
+    descriptors::{
+        DescriptorAllocator, DescriptorAllocatorGrowable, DescriptorLayoutBuilder,
+        DescriptorWriter, PoolSizeRatio,
+    },
     frames::Frames,
     graphics::MeshPipeline,
     gui::{Gui, affine_ui, vec4_drag_value},
     immediate::ImmediateSubmit,
-    mesh::{GPUDrawPushConstants, Mesh, load_gltf_from_path},
+    mesh::{GPUDrawPushConstants, GPUSceneData, Mesh, load_gltf_from_path},
     shader::ShaderCompiler,
     swapchain::{self, Swapchain},
     texture::{AllocatedImage, DrawImage, copy_image_to_image, create_depth_image},
     utils::{
-        color_attachment_info, depth_attachment_info, semaphore_submit_info, transition_image,
+        color_attachment_info, depth_attachment_info, memcopy, semaphore_submit_info,
+        transition_image,
     },
     vulkan::Vulkan,
 };
@@ -43,8 +49,28 @@ pub struct Engine {
     mesh_matrix: Affine3A,
     meshes: Vec<Mesh>,
     resize_swapchain: bool,
+    scene_data: GPUSceneData,
+    scene_data_layout: vk::DescriptorSetLayout,
+    scene_data_buffer: AllocatedBuffer,
 }
-
+fn create_scene_data_buffer(
+    allocator: &vk_mem::Allocator,
+    scene_data: GPUSceneData,
+) -> eyre::Result<AllocatedBuffer> {
+    let scene_data_size = std::mem::size_of::<GPUSceneData>() as u64;
+    let scene_data_buffer = AllocatedBuffer::new(
+        &allocator,
+        scene_data_size,
+        vk::BufferUsageFlags::UNIFORM_BUFFER,
+        vk_mem::MemoryUsage::Auto,
+    )?;
+    let memory = unsafe { allocator.map_memory(&mut scene_data_buffer.allocation()) }?;
+    unsafe { memcopy(&[scene_data], memory) };
+    unsafe {
+        allocator.unmap_memory(&mut scene_data_buffer.allocation());
+    };
+    Ok(scene_data_buffer)
+}
 impl Engine {
     pub fn destroy(&mut self, gui: &mut ManuallyDrop<Gui>) {
         unsafe { self.vulkan.device().device_wait_idle() }.unwrap();
@@ -52,6 +78,8 @@ impl Engine {
         let allocator = &mut self.allocator;
         self.frames.destroy(device);
         //
+        unsafe { device.destroy_descriptor_set_layout(self.scene_data_layout, None) };
+        self.scene_data_buffer.destroy(allocator);
         for mesh in &mut self.meshes {
             mesh.mesh_buffers_mut().destroy(allocator);
         }
@@ -140,6 +168,18 @@ impl Engine {
             vulkan.transfer_queue(),
             &immediate_transfer,
         )?;
+        let view = Mat4::from_translation(Vec3::new(0.0, 0.0, -5.0));
+        let aspect_ratio = width as f32 / height as f32;
+        let mut proj = Mat4::perspective_rh(f32::to_radians(70.0), aspect_ratio, 10000.0, 0.1);
+        proj.y_axis.y *= -1.0;
+        let scene_data = GPUSceneData::new(view, proj, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO);
+        let scene_data_layout = DescriptorLayoutBuilder::new()
+            .add_binding(0, vk::DescriptorType::UNIFORM_BUFFER)
+            .build(
+                device,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            )?;
+        let scene_data_buffer = create_scene_data_buffer(&allocator, scene_data)?;
         Ok(Self {
             window,
             render: true,
@@ -162,6 +202,9 @@ impl Engine {
             meshes,
             render_scale: 1.0,
             resize_swapchain: false,
+            scene_data,
+            scene_data_layout,
+            scene_data_buffer,
         })
     }
     fn draw_extent(&self) -> vk::Extent2D {
@@ -237,7 +280,8 @@ impl Engine {
             ui.add(egui::Slider::new(&mut self.render_scale, 0.3..=1.0))
         });
     }
-    fn draw_geometry(&self, cmd: vk::CommandBuffer) {
+
+    fn draw_geometry(&mut self, cmd: vk::CommandBuffer) -> eyre::Result<()> {
         let device = self.vulkan.device();
         let color_attachment_info = color_attachment_info()
             .view(self.draw_image.image_view())
@@ -319,8 +363,25 @@ impl Engine {
                 0,
             );
         };
+        self.scene_data_buffer = create_scene_data_buffer(&self.allocator, self.scene_data)?;
+        let global_descriptor = self
+            .frames
+            .get_current_frame_mut()
+            .frame_descriptors_mut()
+            .allocate(device, self.scene_data_layout)?;
 
+        let mut writer = DescriptorWriter::new();
+        writer.write_buffer(
+            0,
+            self.scene_data_buffer.buffer(),
+            0,
+            std::mem::size_of::<GPUSceneData>() as u64,
+            vk::DescriptorType::UNIFORM_BUFFER,
+        );
+        writer.update_set(device, global_descriptor);
         unsafe { device.cmd_end_rendering(cmd) };
+
+        Ok(())
     }
 
     fn resize_swapchain(&mut self) -> eyre::Result<()> {
@@ -353,6 +414,14 @@ impl Engine {
                 u64::MAX,
             )
         }?;
+
+        self.scene_data_buffer.destroy(&self.allocator);
+
+        self.frames
+            .get_current_frame_mut()
+            .frame_descriptors_mut()
+            .clear_pools(device)?;
+
         unsafe { device.reset_fences(&[self.frames.get_current_frame().render_fence()]) }?;
         gui.free_textures()?;
 
@@ -393,21 +462,24 @@ impl Engine {
     }
 
     fn record_commands(
-        &self,
+        &mut self,
         gui: &mut Gui,
         primitives: &[egui::ClippedPrimitive],
         pixels_per_point: f32,
         image_index: u32,
         cmd: vk::CommandBuffer,
     ) -> Result<(), eyre::Error> {
-        let device = self.vulkan.device();
-        unsafe { device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty()) }?;
+        unsafe {
+            self.vulkan
+                .device()
+                .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+        }?;
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        unsafe { device.begin_command_buffer(cmd, &begin_info) }?;
+        unsafe { self.vulkan.device().begin_command_buffer(cmd, &begin_info) }?;
         let draw_image = self.draw_image.image();
         transition_image(
-            device,
+            self.vulkan.device(),
             cmd,
             draw_image,
             vk::ImageLayout::UNDEFINED,
@@ -415,23 +487,23 @@ impl Engine {
         );
         self.draw_background(cmd);
         transition_image(
-            device,
+            self.vulkan.device(),
             cmd,
             draw_image,
             vk::ImageLayout::GENERAL,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         );
         transition_image(
-            device,
+            self.vulkan.device(),
             cmd,
             self.depth_image.image(),
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
         );
 
-        self.draw_geometry(cmd);
+        self.draw_geometry(cmd)?;
         transition_image(
-            device,
+            self.vulkan.device(),
             cmd,
             draw_image,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -439,7 +511,7 @@ impl Engine {
         );
         let swapchain_image = self.swapchain.images()[image_index as usize];
         transition_image(
-            device,
+            self.vulkan.device(),
             cmd,
             swapchain_image,
             vk::ImageLayout::UNDEFINED,
@@ -447,7 +519,7 @@ impl Engine {
         );
         let draw_extent = self.draw_extent();
         copy_image_to_image(
-            device,
+            self.vulkan.device(),
             cmd,
             draw_image,
             swapchain_image,
@@ -455,7 +527,7 @@ impl Engine {
             self.swapchain.extent(),
         );
         transition_image(
-            device,
+            self.vulkan.device(),
             cmd,
             swapchain_image,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -463,7 +535,7 @@ impl Engine {
         );
         let swapchain_image_view = self.swapchain.image_views()[image_index as usize];
         gui.draw_gui(
-            device,
+            self.vulkan.device(),
             cmd,
             swapchain_image_view,
             self.swapchain.extent(),
@@ -471,13 +543,13 @@ impl Engine {
             primitives,
         )?;
         transition_image(
-            device,
+            self.vulkan.device(),
             cmd,
             swapchain_image,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::PRESENT_SRC_KHR,
         );
-        unsafe { device.end_command_buffer(cmd) }?;
+        unsafe { self.vulkan.device().end_command_buffer(cmd) }?;
         Ok(())
     }
 

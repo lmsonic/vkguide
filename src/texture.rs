@@ -4,7 +4,7 @@ use ash::vk::{
 use vk_mem::Alloc;
 use winit::window::Window;
 
-use crate::descriptors::{DescriptorAllocator, DescriptorLayoutBuilder};
+use crate::descriptors::{DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter};
 
 pub fn copy_image_to_image(
     device: &ash::Device,
@@ -151,21 +151,21 @@ impl DrawImage {
         let descriptor_set_layout = DescriptorLayoutBuilder::new()
             .add_binding(0, vk::DescriptorType::STORAGE_IMAGE)
             .build(device, vk::ShaderStageFlags::COMPUTE)?;
-        let descriptor_set = descriptor_allocator.allocate(device, descriptor_set_layout)?[0];
-        let image_info = vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(image.image_view());
-        let image_infos = [image_info];
-        let write_descriptor_set = vk::WriteDescriptorSet::default()
-            .dst_binding(0)
-            .dst_set(descriptor_set)
-            .image_info(&image_infos)
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE);
-        unsafe { device.update_descriptor_sets(&[write_descriptor_set], &[]) };
+        let set = descriptor_allocator.allocate(device, descriptor_set_layout)?[0];
+
+        let mut writer = DescriptorWriter::new();
+        writer.write_image(
+            0,
+            image.image_view,
+            vk::Sampler::null(),
+            vk::ImageLayout::GENERAL,
+            vk::DescriptorType::STORAGE_IMAGE,
+        );
+        writer.update_set(device, set);
+
         Ok(Self {
             image,
-            descriptor_set,
+            descriptor_set: set,
             descriptor_set_layout,
         })
     }

@@ -6,6 +6,78 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use crate::{buffer::AllocatedBuffer, immediate::ImmediateSubmit, utils::memcopy};
 
+#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct Vertex {
+    pos: Vec3,
+    uv_x: f32,
+    normal: Vec3,
+    uv_y: f32,
+    color: Vec4,
+}
+
+impl Vertex {
+    pub const fn new(pos: Vec3, color: Vec4) -> Self {
+        let uv = Vec2::ZERO;
+        let normal = Vec3::ZERO;
+        Self {
+            pos,
+            uv_x: uv.x,
+            normal,
+            uv_y: uv.y,
+            color,
+        }
+    }
+}
+
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct GPUSceneData {
+    view: Mat4,
+    proj: Mat4,
+    view_proj: Mat4,
+    ambient_color: Vec4,
+    sun_direction: Vec4,
+    sun_color: Vec4,
+}
+
+impl GPUSceneData {
+    pub fn new(
+        view: Mat4,
+        proj: Mat4,
+        ambient_color: Vec4,
+        sun_direction: Vec4,
+        sun_color: Vec4,
+    ) -> Self {
+        Self {
+            view,
+            proj,
+            view_proj: view * proj,
+            ambient_color,
+            sun_direction,
+            sun_color,
+        }
+    }
+}
+
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct GPUDrawPushConstants {
+    world_matrix: Mat4,
+    vertex_buffer_addr: vk::DeviceAddress,
+    _pad: Vec2,
+}
+
+impl GPUDrawPushConstants {
+    pub const fn new(world_matrix: Mat4, vertex_buffer_addr: vk::DeviceAddress) -> Self {
+        Self {
+            world_matrix,
+            vertex_buffer_addr,
+            _pad: Vec2::ZERO,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct GeoSurface {
     start_index: u32,
@@ -132,29 +204,6 @@ impl Mesh {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-pub struct Vertex {
-    pos: Vec3,
-    uv_x: f32,
-    normal: Vec3,
-    uv_y: f32,
-    color: Vec4,
-}
-
-impl Vertex {
-    pub const fn new(pos: Vec3, color: Vec4) -> Self {
-        let uv = Vec2::ZERO;
-        let normal = Vec3::ZERO;
-        Self {
-            pos,
-            uv_x: uv.x,
-            normal,
-            uv_y: uv.y,
-            color,
-        }
-    }
-}
 pub struct GPUMeshBuffers {
     index_buffer: AllocatedBuffer,
     vertex_buffer: AllocatedBuffer,
@@ -248,22 +297,5 @@ impl GPUMeshBuffers {
 
     pub const fn index_buffer(&self) -> &AllocatedBuffer {
         &self.index_buffer
-    }
-}
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C, align(4))]
-pub struct GPUDrawPushConstants {
-    world_matrix: Mat4,
-    vertex_buffer_addr: vk::DeviceAddress,
-    _pad: Vec2,
-}
-
-impl GPUDrawPushConstants {
-    pub const fn new(world_matrix: Mat4, vertex_buffer_addr: vk::DeviceAddress) -> Self {
-        Self {
-            world_matrix,
-            vertex_buffer_addr,
-            _pad: Vec2::ZERO,
-        }
     }
 }

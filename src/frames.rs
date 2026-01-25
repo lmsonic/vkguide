@@ -1,6 +1,10 @@
 use ash::vk;
 
-use crate::{utils, vulkan::Vulkan};
+use crate::{
+    descriptors::{DescriptorAllocatorGrowable, PoolSizeRatio},
+    utils,
+    vulkan::Vulkan,
+};
 
 pub const FRAMES_IN_FLIGHT: usize = 2;
 
@@ -29,6 +33,14 @@ impl Frames {
             frame_data.render_fence = unsafe { device.create_fence(&fence_info, None) }?;
             frame_data.swapchain_semaphore =
                 unsafe { device.create_semaphore(&semaphore_info, None) }?;
+
+            let ratios = [
+                PoolSizeRatio::new(vk::DescriptorType::STORAGE_IMAGE, 3.0),
+                PoolSizeRatio::new(vk::DescriptorType::STORAGE_BUFFER, 3.0),
+                PoolSizeRatio::new(vk::DescriptorType::UNIFORM_BUFFER, 3.0),
+                PoolSizeRatio::new(vk::DescriptorType::COMBINED_IMAGE_SAMPLER, 4.0),
+            ];
+            frame_data.frame_descriptors = DescriptorAllocatorGrowable::new(device, 1000, &ratios)?;
         }
         Ok(Self {
             frames,
@@ -39,8 +51,11 @@ impl Frames {
     pub const fn get_current_frame(&self) -> &FrameData {
         &self.frames[self.frame_index % FRAMES_IN_FLIGHT]
     }
+    pub const fn get_current_frame_mut(&mut self) -> &mut FrameData {
+        &mut self.frames[self.frame_index % FRAMES_IN_FLIGHT]
+    }
     pub const fn advance(&mut self) {
-        self.frame_index = (self.frame_index + 1) % FRAMES_IN_FLIGHT ;
+        self.frame_index = (self.frame_index + 1) % FRAMES_IN_FLIGHT;
     }
     pub fn destroy(&mut self, device: &ash::Device) {
         for f in &mut self.frames {
@@ -54,6 +69,7 @@ pub struct FrameData {
     cmd_buffer: vk::CommandBuffer,
     render_fence: vk::Fence,
     swapchain_semaphore: vk::Semaphore,
+    frame_descriptors: DescriptorAllocatorGrowable,
 }
 
 impl FrameData {
@@ -63,6 +79,7 @@ impl FrameData {
             cmd_buffer: vk::CommandBuffer::null(),
             render_fence: vk::Fence::null(),
             swapchain_semaphore: vk::Semaphore::null(),
+            frame_descriptors: DescriptorAllocatorGrowable::uninit(),
         }
     }
 
@@ -70,6 +87,7 @@ impl FrameData {
         unsafe { device.destroy_command_pool(self.cmd_pool, None) };
         unsafe { device.destroy_fence(self.render_fence, None) };
         unsafe { device.destroy_semaphore(self.swapchain_semaphore, None) };
+        self.frame_descriptors.destroy_pools(device);
     }
 
     pub const fn cmd_pool(&self) -> vk::CommandPool {
@@ -86,5 +104,12 @@ impl FrameData {
 
     pub const fn swapchain_semaphore(&self) -> vk::Semaphore {
         self.swapchain_semaphore
+    }
+
+    pub fn frame_descriptors(&self) -> &DescriptorAllocatorGrowable {
+        &self.frame_descriptors
+    }
+    pub fn frame_descriptors_mut(&mut self) -> &mut DescriptorAllocatorGrowable {
+        &mut self.frame_descriptors
     }
 }
