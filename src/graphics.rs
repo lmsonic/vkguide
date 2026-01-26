@@ -87,7 +87,7 @@ pub enum Blending {
     Alpha,
 }
 
-#[derive(bon::Builder)]
+#[derive(Clone, Copy, bon::Builder)]
 pub struct GraphicsPipelineInfo {
     shaders: [vk::ShaderModule; 2],
     topology: vk::PrimitiveTopology,
@@ -128,7 +128,7 @@ impl GraphicsPipelineInfo {
             .front_face(self.front_face)
     }
 
-    fn create(self, device: &ash::Device) -> eyre::Result<vk::Pipeline> {
+    pub fn create(&self, device: &ash::Device) -> eyre::Result<vk::Pipeline> {
         let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .scissor_count(1)
             .viewport_count(1);
