@@ -62,6 +62,20 @@ impl Frames {
             f.destroy(device);
         }
     }
+    pub fn allocate_frame_descriptor_set(
+        &mut self,
+        device: &ash::Device,
+        layout: vk::DescriptorSetLayout,
+    ) -> eyre::Result<ash::vk::DescriptorSet> {
+        self.frames[self.frame_index % FRAMES_IN_FLIGHT]
+            .frame_descriptors
+            .allocate(device, layout)
+    }
+    pub fn clear_frame_descriptor_sets(&mut self, device: &ash::Device) -> eyre::Result<()> {
+        self.frames[self.frame_index % FRAMES_IN_FLIGHT]
+            .frame_descriptors
+            .clear_pools(device)
+    }
 }
 
 pub struct FrameData {
@@ -104,12 +118,5 @@ impl FrameData {
 
     pub const fn swapchain_semaphore(&self) -> vk::Semaphore {
         self.swapchain_semaphore
-    }
-
-    pub fn frame_descriptors(&self) -> &DescriptorAllocatorGrowable {
-        &self.frame_descriptors
-    }
-    pub fn frame_descriptors_mut(&mut self) -> &mut DescriptorAllocatorGrowable {
-        &mut self.frame_descriptors
     }
 }

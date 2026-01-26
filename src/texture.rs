@@ -15,10 +15,10 @@ pub const BLACK: Vec4 = Vec4::ZERO;
 pub const MAGENTA: Vec4 = Vec4::new(1.0, 0.0, 1.0, 1.0);
 
 pub struct EngineImages {
-    white: AllocatedImage,
-    grey: AllocatedImage,
-    black: AllocatedImage,
-    error: AllocatedImage,
+    pub white: AllocatedImage,
+    pub grey: AllocatedImage,
+    pub black: AllocatedImage,
+    pub error: AllocatedImage,
 }
 
 impl EngineImages {
@@ -110,12 +110,12 @@ impl EngineImages {
     }
 }
 
-pub struct Samplers {
-    nearest: vk::Sampler,
-    linear: vk::Sampler,
+pub struct DefaultSamplers {
+    pub nearest: vk::Sampler,
+    pub linear: vk::Sampler,
 }
 
-impl Samplers {
+impl DefaultSamplers {
     pub fn new(device: &ash::Device) -> eyre::Result<Self> {
         let sampler_info = vk::SamplerCreateInfo::default()
             .mag_filter(vk::Filter::NEAREST)
@@ -241,15 +241,15 @@ impl DrawImage {
             .build(device, vk::ShaderStageFlags::COMPUTE)?;
         let set = descriptor_allocator.allocate(device, descriptor_set_layout)?[0];
 
-        let mut writer = DescriptorWriter::new();
-        writer.write_image(
-            0,
-            image.image_view,
-            vk::Sampler::null(),
-            vk::ImageLayout::GENERAL,
-            vk::DescriptorType::STORAGE_IMAGE,
-        );
-        writer.update_set(device, set);
+        DescriptorWriter::new()
+            .write_image(
+                0,
+                image.image_view,
+                vk::Sampler::null(),
+                vk::ImageLayout::GENERAL,
+                vk::DescriptorType::STORAGE_IMAGE,
+            )
+            .update_set(device, set);
 
         Ok(Self {
             image,

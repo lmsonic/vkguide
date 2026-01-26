@@ -58,7 +58,8 @@ pub struct DescriptorWriter<'a> {
     writes: Vec<vk::WriteDescriptorSet<'a>>,
 }
 
-impl DescriptorWriter<'_> {
+impl<'a> DescriptorWriter<'a> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             image_infos: Arena::new(),
@@ -67,14 +68,15 @@ impl DescriptorWriter<'_> {
         }
     }
 
+    #[must_use]
     pub fn write_image(
-        &mut self,
+        mut self,
         binding: u32,
         image_view: vk::ImageView,
         sampler: vk::Sampler,
         layout: vk::ImageLayout,
         descriptor_type: vk::DescriptorType,
-    ) {
+    ) -> DescriptorWriter<'a> {
         let info = self.image_infos.alloc(
             vk::DescriptorImageInfo::default()
                 .sampler(sampler)
@@ -88,15 +90,17 @@ impl DescriptorWriter<'_> {
             .descriptor_type(descriptor_type);
         write.p_image_info = info;
         self.writes.push(write);
+        self
     }
+    #[must_use]
     pub fn write_buffer(
-        &mut self,
+        mut self,
         binding: u32,
         buffer: vk::Buffer,
         offset: u64,
         size: u64,
         descriptor_type: vk::DescriptorType,
-    ) {
+    ) -> DescriptorWriter<'a> {
         let info = self.buffer_infos.alloc(
             vk::DescriptorBufferInfo::default()
                 .buffer(buffer)
@@ -110,12 +114,13 @@ impl DescriptorWriter<'_> {
             .descriptor_type(descriptor_type);
         write.p_buffer_info = info;
         self.writes.push(write);
+        self
     }
     pub fn clear(self) -> Self {
         drop(self);
         Self::new()
     }
-    pub fn update_set(&mut self, device: &ash::Device, set: vk::DescriptorSet) {
+    pub fn update_set(mut self, device: &ash::Device, set: vk::DescriptorSet) {
         for w in &mut self.writes {
             *w = w.dst_set(set);
         }

@@ -2,6 +2,7 @@ use ash::vk::{self};
 use eyre::eyre;
 
 use crate::{
+    descriptors::DescriptorLayoutBuilder,
     mesh::GPUDrawPushConstants,
     shader::ShaderCompiler,
     texture::{AllocatedImage, DrawImage},
@@ -18,6 +19,7 @@ impl MeshPipeline {
         shader_compiler: &ShaderCompiler,
         draw_image: &DrawImage,
         depth_image: &AllocatedImage,
+        image_layout: vk::DescriptorSetLayout,
     ) -> eyre::Result<Self> {
         let vertex_src = include_str!("../shaders/colored_triangle_mesh.vert");
         let vertex_shader = shader_compiler.create_shader_module_from_str(
@@ -28,12 +30,12 @@ impl MeshPipeline {
             "main",
         )?;
 
-        let frag_src = include_str!("../shaders/colored_triangle.frag");
+        let frag_src = include_str!("../shaders/tex_image.frag");
         let frag_shader = shader_compiler.create_shader_module_from_str(
             device,
             frag_src,
             shaderc::ShaderKind::Fragment,
-            "colored_triangle.frag",
+            "tex_image.frag",
             "main",
         )?;
         let push_constant = vk::PushConstantRange::default()
@@ -41,8 +43,10 @@ impl MeshPipeline {
             .stage_flags(vk::ShaderStageFlags::VERTEX);
 
         let push_constants = [push_constant];
-        let layout_info =
-            vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&push_constants);
+        let set_layouts = [image_layout];
+        let layout_info = vk::PipelineLayoutCreateInfo::default()
+            .push_constant_ranges(&push_constants)
+            .set_layouts(&set_layouts);
         let layout = unsafe { device.create_pipeline_layout(&layout_info, None) }?;
 
         let pipeline = GraphicsPipelineInfo::builder()

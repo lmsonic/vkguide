@@ -16,7 +16,7 @@ use crate::{
     mesh::{GPUDrawPushConstants, GPUSceneData, Mesh, load_gltf_from_path},
     shader::ShaderCompiler,
     swapchain::{self, Swapchain},
-    texture::{AllocatedImage, DrawImage, EngineImages, Samplers, copy_image_to_image},
+    texture::{AllocatedImage, DefaultSamplers, DrawImage, EngineImages, copy_image_to_image},
     utils::{
         color_attachment_info, depth_attachment_info, memcopy, semaphore_submit_info,
         transition_image,
@@ -49,7 +49,8 @@ pub struct Engine {
     scene_data_layout: vk::DescriptorSetLayout,
     scene_data_buffer: AllocatedBuffer,
     engine_images: EngineImages,
-    samplers: Samplers,
+    default_samplers: DefaultSamplers,
+    single_image_layout: vk::DescriptorSetLayout,
 }
 fn create_scene_data_buffer(
     allocator: &vk_mem::Allocator,
@@ -76,7 +77,8 @@ impl Engine {
         let allocator = &mut self.allocator;
         self.frames.destroy(device);
         //
-        self.samplers.destroy(device);
+        unsafe { device.destroy_descriptor_set_layout(self.single_image_layout, None) };
+        self.default_samplers.destroy(device);
         self.engine_images.destroy(device, allocator);
         unsafe { device.destroy_descriptor_set_layout(self.scene_data_layout, None) };
         self.scene_data_buffer.destroy(allocator);
@@ -159,7 +161,16 @@ impl Engine {
             ImmediateSubmit::new(device, vulkan.queue_family_indices().transfer)?;
         let background_effects = create_compute_effects(device, &draw_image, &shader_compiler)?;
 
-        let mesh_pipeline = MeshPipeline::new(device, &shader_compiler, &draw_image, &depth_image)?;
+        let single_image_layout = DescriptorLayoutBuilder::new()
+            .add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .build(device, vk::ShaderStageFlags::FRAGMENT)?;
+        let mesh_pipeline = MeshPipeline::new(
+            device,
+            &shader_compiler,
+            &draw_image,
+            &depth_image,
+            single_image_layout,
+        )?;
 
         let meshes = load_gltf_from_path(
             "assets/basicmesh.glb",
@@ -186,7 +197,8 @@ impl Engine {
             &immediate_transfer,
             vulkan.transfer_queue(),
         )?;
-        let samplers = Samplers::new(device)?;
+        let samplers = DefaultSamplers::new(device)?;
+
         Ok(Self {
             window,
             render: true,
@@ -212,7 +224,8 @@ impl Engine {
             scene_data_layout,
             scene_data_buffer,
             engine_images,
-            samplers,
+            default_samplers: samplers,
+            single_image_layout,
         })
     }
     fn draw_extent(&self) -> vk::Extent2D {
@@ -333,6 +346,28 @@ impl Engine {
         };
         unsafe { device.cmd_set_scissor(cmd, 0, &[scissor]) };
 
+        let image_set = self
+            .frames
+            .allocate_frame_descriptor_set(device, self.single_image_layout)?;
+        DescriptorWriter::new()
+            .write_image(
+                0,
+                self.engine_images.error.image_view(),
+                self.default_samplers.nearest,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            )
+            .update_set(device, image_set);
+        unsafe {
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.mesh_pipeline.layout(),
+                0,
+                &[image_set],
+                &[],
+            );
+        };
         let aspect_ratio = draw_extent.width as f32 / draw_extent.height as f32;
         let mut projection =
             Mat4::perspective_rh(f32::to_radians(70.0), aspect_ratio, 10000.0, 0.1);
@@ -374,19 +409,17 @@ impl Engine {
         self.scene_data_buffer = create_scene_data_buffer(&self.allocator, self.scene_data)?;
         let global_descriptor = self
             .frames
-            .get_current_frame_mut()
-            .frame_descriptors_mut()
-            .allocate(device, self.scene_data_layout)?;
+            .allocate_frame_descriptor_set(device, self.scene_data_layout)?;
 
-        let mut writer = DescriptorWriter::new();
-        writer.write_buffer(
-            0,
-            self.scene_data_buffer.buffer(),
-            0,
-            std::mem::size_of::<GPUSceneData>() as u64,
-            vk::DescriptorType::UNIFORM_BUFFER,
-        );
-        writer.update_set(device, global_descriptor);
+        DescriptorWriter::new()
+            .write_buffer(
+                0,
+                self.scene_data_buffer.buffer(),
+                0,
+                std::mem::size_of::<GPUSceneData>() as u64,
+                vk::DescriptorType::UNIFORM_BUFFER,
+            )
+            .update_set(device, global_descriptor);
         unsafe { device.cmd_end_rendering(cmd) };
 
         Ok(())
@@ -425,10 +458,7 @@ impl Engine {
 
         self.scene_data_buffer.destroy(&self.allocator);
 
-        self.frames
-            .get_current_frame_mut()
-            .frame_descriptors_mut()
-            .clear_pools(device)?;
+        self.frames.clear_frame_descriptor_sets(device)?;
 
         unsafe { device.reset_fences(&[self.frames.get_current_frame().render_fence()]) }?;
         gui.free_textures()?;
