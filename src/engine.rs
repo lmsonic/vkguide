@@ -3,16 +3,12 @@ use std::{mem::ManuallyDrop, sync::Arc};
 use ash::vk::{self};
 use eyre::eyre;
 use glam::{Affine3A, Mat4, Vec3, Vec4};
-use vk_mem::Alloc;
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 use crate::{
     buffer::AllocatedBuffer,
     compute::{ComputeEffect, create_compute_effects},
-    descriptors::{
-        DescriptorAllocator, DescriptorAllocatorGrowable, DescriptorLayoutBuilder,
-        DescriptorWriter, PoolSizeRatio,
-    },
+    descriptors::{DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio},
     frames::Frames,
     graphics::MeshPipeline,
     gui::{Gui, affine_ui, vec4_drag_value},
@@ -20,7 +16,7 @@ use crate::{
     mesh::{GPUDrawPushConstants, GPUSceneData, Mesh, load_gltf_from_path},
     shader::ShaderCompiler,
     swapchain::{self, Swapchain},
-    texture::{AllocatedImage, DrawImage, copy_image_to_image, create_depth_image},
+    texture::{AllocatedImage, DrawImage, EngineImages, Samplers, copy_image_to_image},
     utils::{
         color_attachment_info, depth_attachment_info, memcopy, semaphore_submit_info,
         transition_image,
@@ -52,6 +48,8 @@ pub struct Engine {
     scene_data: GPUSceneData,
     scene_data_layout: vk::DescriptorSetLayout,
     scene_data_buffer: AllocatedBuffer,
+    engine_images: EngineImages,
+    samplers: Samplers,
 }
 fn create_scene_data_buffer(
     allocator: &vk_mem::Allocator,
@@ -59,7 +57,7 @@ fn create_scene_data_buffer(
 ) -> eyre::Result<AllocatedBuffer> {
     let scene_data_size = std::mem::size_of::<GPUSceneData>() as u64;
     let scene_data_buffer = AllocatedBuffer::new(
-        &allocator,
+        allocator,
         scene_data_size,
         vk::BufferUsageFlags::UNIFORM_BUFFER,
         vk_mem::MemoryUsage::Auto,
@@ -78,6 +76,8 @@ impl Engine {
         let allocator = &mut self.allocator;
         self.frames.destroy(device);
         //
+        self.samplers.destroy(device);
+        self.engine_images.destroy(device, allocator);
         unsafe { device.destroy_descriptor_set_layout(self.scene_data_layout, None) };
         self.scene_data_buffer.destroy(allocator);
         for mesh in &mut self.meshes {
@@ -152,7 +152,7 @@ impl Engine {
             &allocator,
             &descriptor_allocator,
         )?;
-        let depth_image = create_depth_image(device, &allocator, &draw_image)?;
+        let depth_image = AllocatedImage::create_depth_image(device, &allocator, &draw_image)?;
         let immediate_graphics =
             ImmediateSubmit::new(device, vulkan.queue_family_indices().graphics)?;
         let immediate_transfer =
@@ -180,13 +180,19 @@ impl Engine {
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             )?;
         let scene_data_buffer = create_scene_data_buffer(&allocator, scene_data)?;
+        let engine_images = EngineImages::new(
+            device,
+            &allocator,
+            &immediate_transfer,
+            vulkan.transfer_queue(),
+        )?;
+        let samplers = Samplers::new(device)?;
         Ok(Self {
             window,
             render: true,
             vulkan,
             swapchain,
             render_semaphores,
-
             frames,
             allocator: ManuallyDrop::new(allocator),
             draw_image,
@@ -205,6 +211,8 @@ impl Engine {
             scene_data,
             scene_data_layout,
             scene_data_buffer,
+            engine_images,
+            samplers,
         })
     }
     fn draw_extent(&self) -> vk::Extent2D {

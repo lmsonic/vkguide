@@ -1,4 +1,5 @@
 use ash::vk;
+use glam::Vec4;
 
 /// # Safety
 ///
@@ -8,6 +9,12 @@ pub const unsafe fn memcopy<T>(buffer: &[T], memory: *mut u8) {
     unsafe {
         std::ptr::copy_nonoverlapping(buffer.as_ptr(), memory.cast(), buffer.len());
     };
+}
+
+pub fn pack_unorm_4x8(v: Vec4) -> u32 {
+    let us = (v.clamp(Vec4::ZERO, Vec4::ONE) * 255.0).round();
+    let pack = [us.x as u8, us.y as u8, us.z as u8, us.w as u8];
+    bytemuck::cast(pack)
 }
 
 pub fn semaphore_submit_info<'a>(
