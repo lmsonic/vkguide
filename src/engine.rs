@@ -13,6 +13,9 @@ use crate::{
     graphics::MeshPipeline,
     gui::{Gui, affine_ui, vec4_drag_value},
     immediate::ImmediateSubmit,
+    material::{
+        GLTFMetallicRoughness, MaterialConstants, MaterialInstance, MaterialPass, MaterialResources,
+    },
     mesh::{GPUDrawPushConstants, GPUSceneData, Mesh, load_gltf_from_path},
     shader::ShaderCompiler,
     swapchain::{self, Swapchain},
@@ -51,6 +54,9 @@ pub struct Engine {
     engine_images: EngineImages,
     default_samplers: DefaultSamplers,
     single_image_layout: vk::DescriptorSetLayout,
+    default_data: MaterialInstance,
+    material_constants: AllocatedBuffer,
+    metal_rough_material: GLTFMetallicRoughness,
 }
 fn create_scene_data_buffer(
     allocator: &vk_mem::Allocator,
@@ -77,6 +83,8 @@ impl Engine {
         let allocator = &mut self.allocator;
         self.frames.destroy(device);
         //
+        self.material_constants.destroy(allocator);
+        self.metal_rough_material.destroy(device);
         unsafe { device.destroy_descriptor_set_layout(self.single_image_layout, None) };
         self.default_samplers.destroy(device);
         self.engine_images.destroy(device, allocator);
@@ -194,11 +202,51 @@ impl Engine {
         let engine_images = EngineImages::new(
             device,
             &allocator,
-            &immediate_transfer,
-            vulkan.transfer_queue(),
+            &immediate_graphics,
+            vulkan.graphics_queue(),
         )?;
         let samplers = DefaultSamplers::new(device)?;
 
+        let metal_rough_material = GLTFMetallicRoughness::new(
+            device,
+            &shader_compiler,
+            scene_data_layout,
+            &draw_image,
+            &depth_image,
+        )?;
+
+        let material_constants = AllocatedBuffer::new(
+            &allocator,
+            std::mem::size_of::<MaterialConstants>() as u64,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk_mem::MemoryUsage::Auto,
+        )?;
+
+        let mem = unsafe { allocator.map_memory(&mut material_constants.allocation()) }?;
+        unsafe {
+            memcopy(
+                &[MaterialConstants::new(
+                    Vec4::ONE,
+                    Vec4::new(1.0, 0.5, 0.0, 0.0),
+                )],
+                mem,
+            );
+        };
+        unsafe { allocator.unmap_memory(&mut material_constants.allocation()) };
+        let resources = MaterialResources {
+            color_image_view: engine_images.white.image_view(),
+            color_sampler: samplers.linear,
+            metal_rough_image_vew: engine_images.white.image_view(),
+            metal_rough_sampler: samplers.linear,
+            data_buffer: material_constants.buffer(),
+            data_buffer_offset: 0,
+        };
+        let default_data = metal_rough_material.write_material(
+            device,
+            MaterialPass::MainColor,
+            &resources,
+            &descriptor_allocator,
+        )?;
         Ok(Self {
             window,
             render: true,
@@ -226,6 +274,9 @@ impl Engine {
             engine_images,
             default_samplers: samplers,
             single_image_layout,
+            default_data,
+            material_constants,
+            metal_rough_material,
         })
     }
     fn draw_extent(&self) -> vk::Extent2D {

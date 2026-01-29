@@ -6,7 +6,11 @@ use crate::{
     buffer::AllocatedBuffer,
     descriptors::{DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter},
     immediate::ImmediateSubmit,
-    utils::{memcopy, pack_unorm_4x8, transition_image},
+    utils::{
+        image_subresource_range, layout_to_flag, memcopy, pack_unorm_4x8, transition_image,
+        transition_image_queue,
+    },
+    vulkan::QueueFamilyIndices,
 };
 
 pub const WHITE: Vec4 = Vec4::ONE;
@@ -25,49 +29,39 @@ impl EngineImages {
     pub fn new(
         device: &ash::Device,
         allocator: &vk_mem::Allocator,
-        immediate_transfer: &ImmediateSubmit,
-        transfer_queue: vk::Queue,
+        immediate_graphics: &ImmediateSubmit,
+        graphics_queue: vk::Queue,
     ) -> eyre::Result<Self> {
         let color_format = vk::Format::R8G8B8A8_UNORM;
+
+        let allocate_image = |pixels, extent| {
+            AllocatedImage::with_data(
+                pixels,
+                device,
+                allocator,
+                immediate_graphics,
+                graphics_queue,
+                color_format,
+                extent,
+                vk::ImageUsageFlags::SAMPLED,
+                false,
+            )
+        };
+
         let extent_1px = vk::Extent3D {
             width: 1,
             height: 1,
             depth: 1,
         };
-        let white = AllocatedImage::with_data(
-            &[pack_unorm_4x8(WHITE)],
-            device,
-            allocator,
-            immediate_transfer,
-            transfer_queue,
-            color_format,
-            extent_1px,
-            vk::ImageUsageFlags::SAMPLED,
-            false,
-        )?;
-        let grey = AllocatedImage::with_data(
-            &[pack_unorm_4x8(GREY)],
-            device,
-            allocator,
-            immediate_transfer,
-            transfer_queue,
-            color_format,
-            extent_1px,
-            vk::ImageUsageFlags::SAMPLED,
-            false,
-        )?;
+        let white_color = [pack_unorm_4x8(WHITE)];
+        let white = allocate_image(&white_color, extent_1px)?;
+        let grey_color = [pack_unorm_4x8(GREY)];
+        let grey = allocate_image(&grey_color, extent_1px)?;
+
         let black_color = pack_unorm_4x8(BLACK);
-        let black = AllocatedImage::with_data(
-            &[black_color],
-            device,
-            allocator,
-            immediate_transfer,
-            transfer_queue,
-            color_format,
-            extent_1px,
-            vk::ImageUsageFlags::SAMPLED,
-            false,
-        )?;
+        let binding = [black_color];
+        let black = allocate_image(&binding, extent_1px)?;
+
         let magenta = pack_unorm_4x8(MAGENTA);
         const CHECKER_SIZE: usize = 16;
         let mut pixels = [0_u32; CHECKER_SIZE * CHECKER_SIZE];
@@ -80,20 +74,13 @@ impl EngineImages {
                 };
             }
         }
-        let error = AllocatedImage::with_data(
+        let error = allocate_image(
             &pixels,
-            device,
-            allocator,
-            immediate_transfer,
-            transfer_queue,
-            color_format,
             vk::Extent3D {
                 width: CHECKER_SIZE as u32,
                 height: CHECKER_SIZE as u32,
                 depth: 1,
             },
-            vk::ImageUsageFlags::SAMPLED,
-            false,
         )?;
         Ok(Self {
             white,
@@ -353,8 +340,8 @@ impl AllocatedImage {
         data: &[u32],
         device: &ash::Device,
         allocator: &vk_mem::Allocator,
-        immediate_transfer: &ImmediateSubmit,
-        transfer_queue: vk::Queue,
+        immediate_graphics: &ImmediateSubmit,
+        graphics_queue: vk::Queue,
         format: vk::Format,
         extent: vk::Extent3D,
         usage: vk::ImageUsageFlags,
@@ -381,7 +368,7 @@ impl AllocatedImage {
             mipmapped,
         )?;
 
-        immediate_transfer.submit(device, transfer_queue, |cmd| {
+        immediate_graphics.submit(device, graphics_queue, |cmd| {
             transition_image(
                 device,
                 cmd,

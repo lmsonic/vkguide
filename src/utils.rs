@@ -28,6 +28,56 @@ pub fn semaphore_submit_info<'a>(
         .value(1)
 }
 
+pub fn layout_to_flag(layout: vk::ImageLayout) -> vk::AccessFlags2 {
+    match layout {
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags2::TRANSFER_READ,
+        vk::ImageLayout::PRESENT_SRC_KHR => vk::AccessFlags2::empty(),
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => {
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                | vk::AccessFlags2::COLOR_ATTACHMENT_READ_NONCOHERENT_EXT
+        }
+        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL => {
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+        }
+
+        _ => vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
+    }
+}
+
+pub fn transition_image_queue(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    old_queue: u32,
+    new_queue: u32,
+) {
+    let subresource_range =
+        image_subresource_range(if new_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        });
+    let image_barrier = vk::ImageMemoryBarrier2::default()
+        .src_queue_family_index(old_queue)
+        .dst_queue_family_index(new_queue)
+        .src_access_mask(layout_to_flag(old_layout))
+        .dst_access_mask(layout_to_flag(new_layout))
+        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .subresource_range(subresource_range)
+        .image(image);
+    let image_barriers = [image_barrier];
+    let dependency = vk::DependencyInfo::default().image_memory_barriers(&image_barriers);
+    unsafe { device.cmd_pipeline_barrier2(cmd, &dependency) };
+}
+
 pub fn transition_image(
     device: &ash::Device,
     cmd: vk::CommandBuffer,
@@ -35,19 +85,6 @@ pub fn transition_image(
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
 ) {
-    fn layout_to_flag(layout: vk::ImageLayout) -> vk::AccessFlags2 {
-        match layout {
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags2::TRANSFER_WRITE,
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags2::TRANSFER_READ,
-            vk::ImageLayout::PRESENT_SRC_KHR => vk::AccessFlags2::empty(),
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => {
-                vk::AccessFlags2::COLOR_ATTACHMENT_READ
-                    | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
-                    | vk::AccessFlags2::COLOR_ATTACHMENT_READ_NONCOHERENT_EXT
-            }
-            _ => vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
-        }
-    }
     let subresource_range =
         image_subresource_range(if new_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL {
             vk::ImageAspectFlags::DEPTH

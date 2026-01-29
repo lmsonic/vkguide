@@ -27,10 +27,8 @@ push_constants;
 
 void main() {
   Vertex v = push_constants.vertex_buffer.vertices[gl_VertexIndex];
-
   vec4 pos = vec4(v.pos, 1.0);
   gl_Position = scene_data.view_proj * push_constants.render_matrix * pos;
-
   out_normal = (push_constants.render_matrix * vec4(v.normal, 0.0)).xyz;
   out_color = v.color.xyz * material_data.color_factors.xyz;
   out_uv = vec2(v.uv_x, v.uv_y);

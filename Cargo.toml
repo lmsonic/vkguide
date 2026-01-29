@@ -42,7 +42,7 @@ gltf = { version = "1.4.1", default-features = false, features = [
     "utils",
 ] }
 typed-arena = "2.0.2"
-typed-generational-arena = "0.2.9"
+slotmap = "1.1.1"
 [lints.rust]
 ambiguous_negative_literals = "warn"
 # missing_debug_implementations = "warn"

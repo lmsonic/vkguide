@@ -1,6 +1,5 @@
 use ash::vk::{self, ExtendsDescriptorSetAllocateInfo, ExtendsDescriptorSetLayoutCreateInfo};
 use eyre::eyre;
-use typed_arena::Arena;
 
 pub struct DescriptorLayoutBuilder<'a, 'b> {
     bindings: Vec<vk::DescriptorSetLayoutBinding<'a>>,
@@ -53,17 +52,17 @@ impl<'b> DescriptorLayoutBuilder<'_, 'b> {
 }
 
 pub struct DescriptorWriter<'a> {
-    image_infos: Arena<vk::DescriptorImageInfo>,
-    buffer_infos: Arena<vk::DescriptorBufferInfo>,
+    image_infos: typed_arena::Arena<vk::DescriptorImageInfo>,
+    buffer_infos: typed_arena::Arena<vk::DescriptorBufferInfo>,
     writes: Vec<vk::WriteDescriptorSet<'a>>,
 }
 
-impl<'a> DescriptorWriter<'a> {
+impl DescriptorWriter<'_> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            image_infos: Arena::new(),
-            buffer_infos: Arena::new(),
+            image_infos: typed_arena::Arena::new(),
+            buffer_infos: typed_arena::Arena::new(),
             writes: vec![],
         }
     }
@@ -76,7 +75,7 @@ impl<'a> DescriptorWriter<'a> {
         sampler: vk::Sampler,
         layout: vk::ImageLayout,
         descriptor_type: vk::DescriptorType,
-    ) -> DescriptorWriter<'a> {
+    ) -> Self {
         let info = self.image_infos.alloc(
             vk::DescriptorImageInfo::default()
                 .sampler(sampler)
@@ -100,7 +99,7 @@ impl<'a> DescriptorWriter<'a> {
         offset: u64,
         size: u64,
         descriptor_type: vk::DescriptorType,
-    ) -> DescriptorWriter<'a> {
+    ) -> Self {
         let info = self.buffer_infos.alloc(
             vk::DescriptorBufferInfo::default()
                 .buffer(buffer)
